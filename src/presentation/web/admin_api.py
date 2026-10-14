@@ -1120,7 +1120,12 @@ class WebAdminAPI:
     # ────── Player Avatar / Info ──────
 
     async def _api_player_avatar(self, request):
-        """获取玩家头像URL（从 last_states 缓存中读取，不触发网络请求）"""
+        """获取玩家头像。
+
+        优先返回本地缓存头像的 data URL：浏览器直连 avatars.steamstatic.com 在
+        国内网络下经常不通（而 JSON 接口本身是好的），表现为面板里头像空白。
+        本地没有缓存时才回退到 Steam 原始 URL。
+        """
         p = self.plugin
         steamid = request.match_info.get("steamid", "")
         avatar_url = ""
@@ -1131,6 +1136,27 @@ class WebAdminAPI:
                 avatar_url = state.get("avatarfull") or state.get("avatar") or ""
                 if avatar_url:
                     break
+
+        # 同源头像：把缓存文件直接编码成 data URL，避免浏览器去访问 Steam 图片 CDN
+        data_dir = getattr(p, "data_dir", None)
+        if steamid and data_dir:
+            for name in (f"{steamid}.jpg", f"{steamid}.png"):
+                cached = os.path.join(str(data_dir), "avatars", name)
+                if os.path.isfile(cached):
+                    try:
+                        with open(cached, "rb") as f:
+                            b64 = base64.b64encode(f.read()).decode("ascii")
+                        mime = mimetypes.guess_type(name)[0] or "image/jpeg"
+                        return json_response(
+                            {
+                                "steamid": steamid,
+                                "avatar_url": f"data:{mime};base64,{b64}",
+                                "from_cache": True,
+                            }
+                        )
+                    except Exception:
+                        break
+
         return json_response({"steamid": steamid, "avatar_url": avatar_url})
 
     async def _api_player_info(self, request):

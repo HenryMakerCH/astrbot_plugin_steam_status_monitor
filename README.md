@@ -87,6 +87,7 @@
 - 监控人数较多时，建议适当调高 `max_group_size` 并保持智能轮询，以兼顾时效与 Steam 限流。
 - Steam 摘要同一时刻只有一个 `gameid`，插件不能识别「同时玩多款游戏」，A→B 会视为切换并立即结算 A。
 - 商店安装后首次启动会在后台下载 CJK 字体（约 39MB）。默认先走国内 GitHub 镜像（`gh-proxy.com` / `ghproxy.net` / `github.akams.cn`），失败再回退官方 Release；单个源超时默认 10 分钟。可用 `/steam fonts` 查看状态，`/steam fonts download` 立即下载并显示进度，`/steam fonts clean` 清理缓存。填写 `font_pack_url` 则只用自定义地址。开发克隆若 `assets/fonts` 已有字体则跳过下载。
+- **管理后台页面不依赖外网 CDN**：`echarts` 与 `@mdi/font` 已随插件打包在 `pages/steam-monitor/vendor/`，头像由后端把本地缓存编码成 data URL 返回。因此在内网 / 无代理 / 无法直连国外 CDN 的网络下打开管理后台，图表和头像也能正常显示。（上游版本这两项分别引用 `cdn.jsdelivr.net` 和 Steam 图片 CDN，国内直连时常见症状是控制台报 `echarts is not defined`、图表整块空白，以及头像加载不出来。）
 
 ## 演示截图
 ![开始游戏示例](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/assets/images/str.png)
@@ -209,6 +210,12 @@ pip install httpx pillow
 > 如果本项目对您的生活 / 工作产生了帮助，或者您关注本项目的未来发展，请给项目 Star，这是我维护这个开源项目的动力 ❤️。
 
 ## 更新记录
+
+- V4.9.2-fork（离线 / 内网适配，本 fork 新增）
+  - **页面资源本地化**：`echarts@5.5.0` 与 `@mdi/font@7.3.67`（css + woff2）打包进 `pages/steam-monitor/vendor/`，`index.html` 改为相对路径引用，不再依赖 `cdn.jsdelivr.net`。修复无外网环境下管理后台报 `echarts is not defined`、图表空白的问题。
+  - **头像同源化**：`/players/avatar/<steamid>` 优先把本地缓存（`<data_dir>/avatars/<steamid>.jpg`）编码成 base64 data URL 返回，避免浏览器直连 `avatars.steamstatic.com`（国内常被墙）导致头像空白；本地无缓存时才回退 Steam 原始 URL。
+  - 改动文件：`pages/steam-monitor/index.html`、`src/presentation/web/admin_api.py`，新增 `pages/steam-monitor/vendor/`。
+
 - V4.9.2（2026/09/29）
   - **图片裁剪异步化**：`crop_image_auto` 的远端图片下载改为 httpx 异步（`fetch_image`），移除同步 `requests` 依赖（`requirements.txt` 同步移除），避免阻塞事件循环。
   - **日志 fallback 去 logging**：脱离 AstrBot 的测试环境改用不依赖 `logging` 的轻量 fallback（默认静默），不再自行创建 `logging` logger。
