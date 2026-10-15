@@ -124,8 +124,7 @@ class AchievementTrackingMixin:
 
         msg_parts = []
         if self.config.get("notify_send_text", True):
-            names = ", ".join(str(name) for name in achievements_to_notify)
-            msg_parts.append(Plain(f"🏆【{player_name}】在 {game_name} 解锁成就：{names}"))
+            msg_parts.append(Plain(f"🏆【{player_name}】在 {game_name} 解锁成就："))
 
         tmp_path = None
         if self.config.get("notify_send_image", True) and details:

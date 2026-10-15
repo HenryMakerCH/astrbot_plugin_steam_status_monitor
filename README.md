@@ -209,6 +209,9 @@ pip install httpx pillow
 > 如果本项目对您的生活 / 工作产生了帮助，或者您关注本项目的未来发展，请给项目 Star，这是我维护这个开源项目的动力 ❤️。
 
 ## 更新记录
+- V4.9.3（2026/10/15）
+  - **成就播报精简**：移除成就通知文字中的成就名，仅保留播报前缀与成就图片，使群消息展示更清爽。
+
 - V4.9.2（2026/09/29）
   - **图片裁剪异步化**：`crop_image_auto` 的远端图片下载改为 httpx 异步（`fetch_image`），移除同步 `requests` 依赖（`requirements.txt` 同步移除），避免阻塞事件循环。
   - **日志 fallback 去 logging**：脱离 AstrBot 的测试环境改用不依赖 `logging` 的轻量 fallback（默认静默），不再自行创建 `logging` logger。
