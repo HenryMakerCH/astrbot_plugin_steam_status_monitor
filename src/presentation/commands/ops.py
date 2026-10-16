@@ -10,6 +10,7 @@ from PIL import Image as PILImage
 
 from ...presentation.renderers.game_end import render_game_end
 from ...presentation.renderers.game_start import render_game_start
+from ...presentation.renderers.owned_game import render_owned_game
 from ...presentation.renderers.image_crop import crop_image_auto
 from ...plugin.runtime_config import apply_hot_update
 from ...shared.fonts import resolve_font_path
@@ -234,6 +235,41 @@ async def test_game_end_render(
         yield event.image_result(tmp_path)
     except Exception as exc:
         logger.error(f"测试游戏结束图片渲染失败: {exc}\n{traceback.format_exc()}")
+        yield event.plain_result(f"渲染异常: {exc}")
+
+
+async def test_owned_render(plugin, event, steamid: str, appid: int, mode: str = ""):
+    '''测试新入库播报富卡渲染（mode=plain 时强制降级为无商店数据版本）'''
+    try:
+        status = await plugin.fetch_player_status(steamid)
+        player_name = plugin._resolve_bind_name(steamid, status.get("name") if status else steamid)
+        avatar_url = (status.get("avatarfull") or status.get("avatar")) if status else ""
+        service = getattr(plugin, "owned_games", None)
+        state = service.players.get(str(steamid)) if service is not None else None
+        owned_count = len((state or {}).get("ids") or [])
+        if owned_count == 0:
+            try:
+                owned_count = len(await plugin.fetch_owned_games(steamid))
+            except Exception as exc:
+                logger.warning(f"[测试新入库渲染] 读取游戏库计数失败: {exc}")
+        game_name = await plugin.get_chinese_game_name(appid)
+        card_data = None
+        if mode != "plain" and service is not None:
+            card_data = await service._enrich_card(appid)
+        img_bytes = await render_owned_game(
+            plugin.data_dir, str(steamid), player_name, avatar_url, appid, game_name,
+            owned_count=owned_count, card_data=card_data, added_at=int(time.time()),
+            api_key=plugin.API_KEY, sgdb_api_key=plugin.SGDB_API_KEY,
+            sgdb_api_base=plugin.SGDB_API_BASE, steam_store_base=plugin.STEAM_STORE_BASE,
+            steam_api_base=plugin.STEAM_API_BASE, proxy=plugin.proxy,
+            version=plugin._plugin_version,
+        )
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            tmp.write(img_bytes)
+            tmp_path = tmp.name
+        yield event.image_result(tmp_path)
+    except Exception as exc:
+        logger.error(f"测试新入库卡片渲染失败: {exc}\n{traceback.format_exc()}")
         yield event.plain_result(f"渲染异常: {exc}")
 
 

@@ -389,6 +389,13 @@ class SteamStatusMonitorV3(
             yield result
 
     @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("steam test_owned_render")
+    async def steam_test_owned_render(self, event: AstrMessageEvent, steamid: str, appid: int, mode: str = ""):
+        '''测试新入库播报富卡渲染（steam test_owned_render [steamid] [appid] [plain]）'''
+        async for result in ops.test_owned_render(self, event, steamid, appid, mode):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("steam fonts")
     async def steam_fonts(self, event: AstrMessageEvent, param: str = ""):
         '''字体包管理；参数: download=立即下载, clean=清理缓存'''
