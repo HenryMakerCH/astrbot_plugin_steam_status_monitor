@@ -245,9 +245,10 @@ class MonitorAdminService:
                 self._plugin._save_notify_session()
                 self._plugin._save_group_switches()
             
-            # 持久化
+            # 持久化（状态迁移与清理已发生，强制落盘避免异常退出前丢失）
             self._plugin._save_group_steam_ids()
             self._plugin._save_push_groups()
+            self._plugin._save_persistent_data(force=True)
             
             return GroupMutationResult(
                 True,
@@ -288,21 +289,27 @@ class MonitorAdminService:
         """迁移状态数据从原主群到新主群。"""
         state = self._state
         
-        # 迁移玩家状态
+        # 迁移玩家状态（迁移后删除原主群残留，避免幽灵状态被持续写盘）
         if old_group in state.group_last_states and steam_id in state.group_last_states[old_group]:
-            old_state = state.group_last_states[old_group][steam_id]
+            old_state = state.group_last_states[old_group].pop(steam_id)
+            if not state.group_last_states[old_group]:
+                state.group_last_states.pop(old_group, None)
             state.group_last_states.setdefault(new_group, {})[steam_id] = old_state
             logger.info(f"[状态晋升] 迁移 group_last_states: {old_group}[{steam_id}] -> {new_group}[{steam_id}]")
         
-        # 迁移退出时间
+        # 迁移退出时间（迁移后删除原主群残留）
         if old_group in state.group_last_quit_times and steam_id in state.group_last_quit_times[old_group]:
-            quit_times = state.group_last_quit_times[old_group][steam_id]
+            quit_times = state.group_last_quit_times[old_group].pop(steam_id)
+            if not state.group_last_quit_times[old_group]:
+                state.group_last_quit_times.pop(old_group, None)
             state.group_last_quit_times.setdefault(new_group, {})[steam_id] = quit_times
             logger.info(f"[状态晋升] 迁移 group_last_quit_times: {old_group}[{steam_id}] -> {new_group}[{steam_id}]")
         
-        # 迁移轮询时间
+        # 迁移轮询时间（迁移后删除原主群残留）
         if old_group in state.next_poll_time and steam_id in state.next_poll_time[old_group]:
-            poll_time = state.next_poll_time[old_group][steam_id]
+            poll_time = state.next_poll_time[old_group].pop(steam_id)
+            if not state.next_poll_time[old_group]:
+                state.next_poll_time.pop(old_group, None)
             state.next_poll_time.setdefault(new_group, {})[steam_id] = poll_time
             logger.info(f"[状态晋升] 迁移 next_poll_time: {old_group}[{steam_id}] -> {new_group}[{steam_id}]")
 
