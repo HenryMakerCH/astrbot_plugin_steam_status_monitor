@@ -14,6 +14,7 @@ from ..application.services.rank_view import RankViewService
 from ..application.services.achievement_monitor import AchievementMonitor
 from ..application.services.achievement_tracking import AchievementTrackingMixin
 from ..application.services.notification_tracking import NotificationTrackingMixin
+from ..application.services.owned_games import OwnedGamesService
 from ..application.services.session_quit import SessionQuitMixin
 from ..application.services.status_change_tracking import StatusChangeTrackingMixin
 from ..application.services.polling_tracking import PollingTrackingMixin
@@ -148,6 +149,9 @@ class SteamStatusMonitorV3(
         self._load_bind_data()
         # --- 通知合并缓冲区：SessionService 将开始/结束通知写入此队列，由主轮询统一 flush ---
         self._pending_end_notifications = {}  # {group_id: [notification_dict, ...]}
+        # --- 游戏库新入库播报：独立服务 + 独立后台 task（默认 30 分钟一轮，不阻塞主轮询） ---
+        self.owned_games = OwnedGamesService(self)
+        self._owned_games_task = asyncio.create_task(self.owned_games.run_loop())
         # --- AstrBot Plugin Pages 管理后台 ---
         self.web_api = WebAdminAPI(self)
         self.web_api.register_routes(context)
@@ -164,6 +168,7 @@ class SteamStatusMonitorV3(
             getattr(self, '_achievement_blacklist_verify_task', None),
             getattr(self, '_itad_http_client_task', None),
             getattr(self, '_steam_store_http_client_task', None),
+            getattr(self, '_owned_games_task', None),
         ):
             if t and not t.done():
                 t.cancel()
