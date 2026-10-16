@@ -80,6 +80,14 @@ class SteamClientError(RuntimeError):
     """Steam 客户端调用失败。"""
 
 
+class OwnedGamesRateLimited(SteamClientError):
+    """游戏库接口被 Steam 限流（HTTP 429），调用方应统一退避后重试。"""
+
+
+class OwnedGamesInvisible(SteamClientError):
+    """玩家「游戏详情」隐私不可见，本轮不更新基线、不播报。"""
+
+
 def continue_store_region_fallback(error: ProviderError) -> bool:
     """锁区、无商品和可重试的网络失败继续换区；协议或鉴权错误不再消耗预算。"""
     return error.code in {"REGION_LOCKED", "NOT_FOUND", "TIMEOUT", "UPSTREAM_ERROR"}
@@ -253,6 +261,76 @@ class SteamClientMixin:
                             f"{len(batch)} 个 ID"
                         )
         return result
+
+    async def fetch_owned_games(self, steam_id, include_appinfo=False, include_played_free_games=True, retry=None):
+        '''读取玩家可见的完整游戏库（IPlayerService/GetOwnedGames/v1，无分页）。
+
+        - 返回 list[dict]：每项至少含 appid；include_appinfo=True 时附带 name 等字段；
+        - 空库返回 []；「游戏详情」私密时抛 OwnedGamesInvisible（不得当作空库处理）；
+        - HTTP 429 抛 OwnedGamesRateLimited，由调用方统一退避；
+        - 其余网络/协议失败按 RETRY_TIMES 指数退避重试，最终抛 SteamClientError。
+        安全：API Key 经 params 传递，异常文案与日志均不包含完整 URL 或请求参数，
+        避免 Key 进入日志（与 fork 的安全注释思路一致，不沿用拼 URL 的旧写法）。
+        '''
+        if not self.API_KEY:
+            raise SteamClientError("未配置 Steam API Key")
+        sid = str(steam_id or "").strip()
+        if not sid.isdigit():
+            raise SteamClientError("SteamID 格式无效")
+        url = f"{self.STEAM_API_BASE}/IPlayerService/GetOwnedGames/v1/"
+        params = {
+            "key": self.API_KEY,
+            "steamid": sid,
+            "include_appinfo": 1 if include_appinfo else 0,
+            "include_played_free_games": 1 if include_played_free_games else 0,
+        }
+        attempts = retry if retry is not None else self.RETRY_TIMES
+        delay = 1
+        last_error = None
+        for attempt in range(attempts):
+            try:
+                async with httpx.AsyncClient(timeout=20, **httpx_client_kwargs(self.proxy)) as client:
+                    resp = await client.get(url, params=params)
+                if resp.status_code == 429:
+                    raise OwnedGamesRateLimited("Steam 游戏库接口请求受限（HTTP 429）")
+                if resp.status_code >= 500:
+                    raise RuntimeError(f"HTTP {resp.status_code}")
+                if resp.status_code != 200:
+                    raise SteamClientError(f"Steam 游戏库请求失败（HTTP {resp.status_code}）")
+                try:
+                    payload = resp.json().get("response")
+                except (ValueError, AttributeError) as exc:
+                    raise RuntimeError(f"响应 JSON 解析失败: {type(exc).__name__}") from exc
+                if not isinstance(payload, dict):
+                    raise RuntimeError(f"响应结构异常（类型={type(payload).__name__}）")
+                games = payload.get("games")
+                count = payload.get("game_count")
+                if isinstance(games, list):
+                    if isinstance(count, int) and count != len(games):
+                        # 个别账号存在下架/未审核条目导致计数不一致：仅告警，按实际列表处理
+                        logger.warning(
+                            f"[游戏库] game_count 与列表长度不一致: {count} != {len(games)} (SteamID: {sid})"
+                        )
+                    return [
+                        game for game in games
+                        if isinstance(game, dict) and isinstance(game.get("appid"), int)
+                    ]
+                if count == 0:
+                    return []
+                if "game_count" not in payload:
+                    raise OwnedGamesInvisible("Steam 游戏库不可见（请检查该账号「游戏详情」隐私设置）")
+                raise RuntimeError(f"响应缺少游戏列表（game_count={count!r}）")
+            except (OwnedGamesRateLimited, OwnedGamesInvisible, SteamClientError):
+                raise
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    f"读取 Steam 游戏库失败: {format_exception(exc)} (SteamID: {sid}, 第{attempt+1}次尝试)"
+                )
+                if attempt < attempts - 1:
+                    await asyncio.sleep(delay)
+                    delay *= 2
+        raise SteamClientError("Steam 游戏库请求失败") from last_error
 
     async def resolve_steam_input(self, raw):
         '''将多种格式的 Steam 输入统一解析为 17 位 SteamID64。
