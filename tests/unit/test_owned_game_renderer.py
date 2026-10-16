@@ -1,11 +1,17 @@
 """新入库富卡渲染：结构、降级与资源缺失兜底（不依赖字体包与网络）。"""
 import io
+import os
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
-from src.presentation.renderers.owned_game import render_owned_game, render_owned_game_image
+from src.presentation.renderers.owned_game import (
+    _open_or_none,
+    render_owned_game,
+    render_owned_game_image,
+)
 
 CARD_DATA = {
     "name": "恸哭幽光",
@@ -63,6 +69,28 @@ class RenderOwnedGameWrapperTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(data.startswith(b"\x89PNG"))
+
+
+class AvatarFrameAlphaTests(unittest.TestCase):
+    def test_frame_transparency_kept_and_avatar_not_black(self):
+        """回归：头像框 PNG 透明区曾因转 RGB 变黑，导致头像位置被黑色方块覆盖。"""
+        frame = Image.new("RGBA", (76, 76), (0, 0, 0, 0))
+        ImageDraw.Draw(frame).ellipse((1, 1, 74, 74), outline=(255, 200, 0, 255), width=6)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "frame.png")
+            frame.save(path)
+            loaded = _open_or_none(path)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.mode, "RGBA")
+        self.assertEqual(loaded.getpixel((38, 38))[3], 0)  # 中心保持透明
+
+        avatar = Image.new("RGBA", (64, 64), (200, 30, 30, 255))
+        image = render_owned_game_image(
+            "玩家", "测试游戏", avatar=avatar, avatar_frame=loaded, card_data=None, owned_count=1,
+        )
+        center = image.getpixel((54, 54))
+        self.assertGreater(center[0], 120)  # 头像红色可见
+        self.assertLess(center[1], 90)      # 未被黑色覆盖
 
 
 if __name__ == "__main__":

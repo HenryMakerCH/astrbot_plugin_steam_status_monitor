@@ -68,7 +68,7 @@ def _format_ts(timestamp):
 
 
 def _open_or_none(image_or_path):
-    """把『路径 / Image / 异常』统一成打开好的 RGB Image 或 None。"""
+    """把『路径 / Image / 异常』统一成打开好的 RGBA Image 或 None（保留透明通道，避免头像框透明区变黑）。"""
     if image_or_path is None or isinstance(image_or_path, BaseException):
         return None
     if isinstance(image_or_path, Image.Image):
@@ -77,7 +77,7 @@ def _open_or_none(image_or_path):
     if not path or not os.path.exists(path):
         return None
     try:
-        return Image.open(path).convert("RGB")
+        return Image.open(path).convert("RGBA")
     except Exception:
         return None
 
