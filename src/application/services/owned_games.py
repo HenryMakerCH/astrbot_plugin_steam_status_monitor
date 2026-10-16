@@ -127,14 +127,14 @@ class OwnedGamesService:
     # ================= 后台循环 =================
 
     async def run_loop(self):
-        """独立后台循环：60s 后建立首轮基线，随后按周期同步（默认 1800s）。"""
+        """独立后台循环：60s 后首轮同步（新玩家静默建基线；已有基线者补播停机期间新增），随后按周期同步（默认 1800s）。"""
         await asyncio.sleep(60)
         try:
-            await self.sync_all(baseline_only=True)
+            await self.sync_all()
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("[游戏库] 首轮基线建立失败，将按周期重试")
+            logger.exception("[游戏库] 首轮同步失败，将按周期重试")
         while True:
             try:
                 if time.time() < self._backoff_until:
