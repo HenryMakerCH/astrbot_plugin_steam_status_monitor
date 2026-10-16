@@ -3,6 +3,7 @@ from ..shared.logging import logger
 from astrbot.api.event import filter, AstrMessageEvent
 import time
 import asyncio
+import json
 import os
 from ..application.services.monitor_admin import MonitorAdminService
 from ..application.services.monitor_control import MonitorControlService
@@ -457,3 +458,18 @@ class SteamStatusMonitorV3(
         '''查询本人绑定的 Steam 游戏库（数量 / 最近入库 / 关键词检索）'''
         async for result in ops.mygames(self, event, query):
             yield result
+
+    @filter.llm_tool(name="steam_owned_games")
+    async def steam_owned_games(self, event: AstrMessageEvent, query: str = "", offset: int = 0, limit: int = 20) -> str:
+        '''查询当前消息发送者本人绑定的 Steam 游戏库（游戏总数 / 关键词检索 / 最近入库记录）。
+        只能查询发送者自己的绑定，不能查询其他用户，也不接受指定其他 QQ 或 SteamID。
+
+        Args:
+            query(string): 游戏名关键词；留空时返回游戏库总数与最近入库记录
+            offset(number): 分页起始位置，默认 0
+            limit(number): 每页返回数量（1-50），默认 20
+        '''
+        result = await self.owned_games.list_for_sender(
+            event.get_sender_id(), query=query, offset=offset, limit=limit,
+        )
+        return json.dumps(result, ensure_ascii=False)
