@@ -443,3 +443,17 @@ class SteamStatusMonitorV3(
         '''将当前群/指定群从SteamID的联动推送组移除；可传 target_group 指定群号'''
         async for result in monitor.delpush_group(self, event, steamid, target_group):
             yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("steam syncgames")
+    async def steam_syncgames(self, event: AstrMessageEvent, param: str = ""):
+        '''手动同步本群玩家游戏库（默认仅更新基线；syncgames now 立即播报新增）'''
+        async for result in ops.syncgames(self, event, param):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.MEMBER)
+    @filter.command("steam mygames")
+    async def steam_mygames(self, event: AstrMessageEvent, query: str = ""):
+        '''查询本人绑定的 Steam 游戏库（数量 / 最近入库 / 关键词检索）'''
+        async for result in ops.mygames(self, event, query):
+            yield result

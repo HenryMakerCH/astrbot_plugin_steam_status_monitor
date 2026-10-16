@@ -6,6 +6,7 @@ from src.infrastructure.clients.steam import (
     OwnedGamesInvisible,
     OwnedGamesRateLimited,
 )
+from src.infrastructure.persistence.owned_games_store import OwnedGamesStore
 
 SID = "76561198000000001"
 
@@ -258,6 +259,21 @@ class OwnedGamesServiceTests(unittest.IsolatedAsyncioTestCase):
         self.service.players["x"] = {"ids": []}
         self.service.clear()
         self.assertEqual(self.service.players, {})
+
+    async def test_admin_flush_helpers_persist_immediately(self):
+        self.plugin.fetch_queue = [games(1)]
+        await self.service.sync_all(baseline_only=True)
+
+        self.assertTrue(self.service.forget_and_flush(SID))
+        self.assertEqual(OwnedGamesStore(self.data_dir).players, {})
+
+        self.service.players["x"] = OwnedGamesStore.new_state()
+        self.assertEqual(self.service.prune_orphans(), ["x"])
+        self.assertEqual(OwnedGamesStore(self.data_dir).players, {})
+
+        self.service.players["y"] = OwnedGamesStore.new_state()
+        self.service.clear_and_flush()
+        self.assertEqual(OwnedGamesStore(self.data_dir).players, {})
 
 
 if __name__ == "__main__":

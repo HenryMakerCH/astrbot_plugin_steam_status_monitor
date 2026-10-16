@@ -275,6 +275,7 @@ class MonitorAdminService:
         self._plugin.session_service.discard_player(steam_id)
         self._clear_runtime_state(steam_id)
         self._remove_bindings(steam_id)
+        self._forget_owned_games(steam_id)
         return GroupMutationResult(True, "removed primary monitor and all push routes")
     
     def _select_promotion_candidate(self, targets: list) -> str:
@@ -351,6 +352,23 @@ class MonitorAdminService:
             del bindings[qq]
         if removed:
             self._plugin._save_bind_data()
+
+    # ========== 游戏库快照联动清理（新入库播报） ==========
+
+    def _forget_owned_games(self, steam_id: str) -> None:
+        service = getattr(self._plugin, "owned_games", None)
+        if service is not None:
+            service.forget_and_flush(steam_id)
+
+    def _prune_owned_games(self) -> None:
+        service = getattr(self._plugin, "owned_games", None)
+        if service is not None:
+            service.prune_orphans()
+
+    def _clear_owned_games(self) -> None:
+        service = getattr(self._plugin, "owned_games", None)
+        if service is not None:
+            service.clear_and_flush()
 
     def add_group(self, group_id: str) -> GroupMutationResult:
         if not is_valid_group_id(group_id):
@@ -455,6 +473,7 @@ class MonitorAdminService:
         plugin._save_persistent_data(force=True)
         if hasattr(getattr(plugin, "config", None), "save_config"):
             plugin.config.save_config()
+        self._prune_owned_games()
         return GroupMutationResult(True, f"已删除群聊 {group_id} 的所有SteamID和分发路由，相关状态数据已清空。")
 
     def clear_all_ids(self) -> GroupMutationResult:
@@ -489,6 +508,7 @@ class MonitorAdminService:
             config["group_steam_ids"] = plugin.group_steam_ids
         if hasattr(config, "save_config"):
             config.save_config()
+        self._clear_owned_games()
         return GroupMutationResult(True, "已删除所有群聊的所有SteamID，相关状态数据已清空。")
 
     def list_group_players(self, group_id: str) -> List[Dict[str, Any]]:

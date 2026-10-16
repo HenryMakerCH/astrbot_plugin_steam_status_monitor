@@ -15,6 +15,8 @@ from ...presentation.renderers.image_crop import crop_image_auto
 from ...plugin.runtime_config import apply_hot_update
 from ...shared.fonts import resolve_font_path
 from ...shared.logging import logger
+from ...shared.utils.notify_session import is_valid_group_id
+from . import group_id_of
 
 HELP_TEXT = (
     "Steam状态监控插件指令：\n"
@@ -30,6 +32,8 @@ HELP_TEXT = (
     "/steam push_group [SteamID] - 添加id到联动推送的副群\n"
     "/steam delpush_group [SteamID] [群号可选] - 删除id联动推送的副群，可指定群号\n"
     "/steam openbox [SteamID] - 查看指定SteamID的全部信息\n"
+    "/steam syncgames [now] - 手动同步本群玩家游戏库（默认仅更新基线，now=立即播报新增）\n"
+    "/steam mygames [关键词] - 查询本人绑定的游戏库（数量/最近入库/关键词检索）\n"
     "/steam rank - 查看本群今日游戏时长排行榜\n"
     "/steam rank 天数 - 查看本群指定天数排行榜（如 7, 30）\n"
     "/steam allrank - 查看所有群今日排行榜\n"
@@ -66,6 +70,64 @@ async def set_config(plugin, event, key: str, value: str):
     yield event.plain_result(msg)
 
 
+async def syncgames(plugin, event, param: str = ""):
+    '''手动同步本群玩家游戏库；默认只更新基线不播报，now=立即播报本轮新增'''
+    group_id = group_id_of(event)
+    if not is_valid_group_id(group_id):
+        yield event.plain_result("请在需要同步游戏库的群聊中使用 /steam syncgames。")
+        return
+    if not plugin.API_KEY:
+        yield event.plain_result("未配置 Steam API Key，请先在插件配置中填写 steam_api_key。")
+        return
+    if group_id not in plugin.running_groups or not plugin.group_monitor_enabled.get(group_id, True):
+        yield event.plain_result("本群尚未启动监控，请先使用 /steam on。")
+        return
+    if not (plugin.group_steam_ids.get(group_id) or []):
+        yield event.plain_result("本群没有监控的 Steam 玩家，请先使用 /steam addid 添加。")
+        return
+    announce = str(param or "").strip().lower() == "now"
+    result = await plugin.owned_games.sync_group_with_report(group_id, announce=announce)
+    mode = "（含播报新增）" if announce else "（仅更新基线）"
+    yield event.plain_result(
+        f"本群游戏库同步完成{mode}：{result['players']} 位玩家，"
+        f"新建基线 {result['baselines']}，新增 {result['added']}，失败 {result['failed']}。"
+    )
+
+
+async def mygames(plugin, event, query: str = ""):
+    '''查询发送者本人绑定的 Steam 游戏库（数量 / 最近入库 / 关键词检索）'''
+    result = await plugin.owned_games.list_for_sender(event.get_sender_id(), query=query)
+    if result.get("error"):
+        yield event.plain_result(result["error"])
+        return
+    player_name = plugin._resolve_bind_name(result.get("steam_id"))
+    lines = [f"🎮 {player_name} 的游戏库共 {result.get('total_owned', 0)} 款"]
+    synced_at = result.get("synced_at")
+    if synced_at:
+        lines.append(f"最近同步：{datetime.fromtimestamp(int(synced_at)).strftime('%Y-%m-%d %H:%M')}")
+    recent = result.get("recent") or []
+    if recent and not query:
+        lines.append("最近入库：")
+        for item in recent[:5]:
+            stamp = ""
+            if item.get("added_at"):
+                stamp = datetime.fromtimestamp(int(item["added_at"])).strftime("（%m-%d %H:%M）")
+            lines.append(f"· {item.get('name')}{stamp}")
+    if query:
+        games = result.get("games") or []
+        if games:
+            matched = result.get("matched", len(games))
+            shown = min(len(games), 10)
+            lines.append(f"匹配 {matched} 款，展示前 {shown} 款：")
+            for item in games[:10]:
+                lines.append(f"· {item.get('name')}（AppID {item.get('appid')}）")
+            if matched > shown:
+                lines.append("（结果较多，可让 AI 助手分页查询更多）")
+        else:
+            lines.append("没有找到匹配的游戏。")
+    yield event.plain_result("\n".join(lines))
+
+
 async def rs(plugin, event):
     plugin.group_last_states.clear()
     plugin.group_last_quit_times.clear()
@@ -81,6 +143,9 @@ async def rs(plugin, event):
     plugin.group_monitor_enabled.clear()
     plugin.group_achievement_enabled.clear()
     plugin.notify_sessions = {}
+    owned = getattr(plugin, "owned_games", None)
+    if owned is not None:
+        owned.clear_and_flush()
     plugin._save_group_switches()
     plugin._save_persistent_data(force=True)
     yield event.plain_result("Steam状态监控插件已重置，所有状态已清空。")

@@ -64,6 +64,33 @@ class OwnedGamesService:
     def clear(self) -> None:
         self.store.clear()
 
+    def forget_and_flush(self, sid) -> bool:
+        """移除单个玩家快照并立即落盘（名单删除钩子用）。"""
+        changed = self.store.forget(sid)
+        if changed:
+            self._flush_now()
+        return changed
+
+    def prune_orphans(self) -> list:
+        """删除不在监控名单中的玩家快照并落盘（群删除钩子用）。"""
+        stale = self.store.prune(self._known_sids())
+        if stale:
+            self._dirty = True
+            self._flush_now()
+        return stale
+
+    def clear_and_flush(self) -> None:
+        """清空全部快照并立即落盘（清空名单/重置钩子用）。"""
+        self.store.clear()
+        self._flush_now()
+
+    def _flush_now(self) -> None:
+        try:
+            self.store.flush()
+            self._dirty = False
+        except Exception:
+            logger.exception("[游戏库] 快照落盘失败")
+
     # ================= 配置读取 =================
 
     def _enabled(self) -> bool:

@@ -286,5 +286,47 @@
     "type": "int",
     "hint": "每日自动推送排行榜的分钟数，默认30（即8:30推送）",
     "default": 30
+  },
+  "enable_owned_games_notify": {
+    "description": "游戏库新入库播报开关",
+    "type": "bool",
+    "hint": "开启后检测到被监控玩家游戏库新增游戏时推送卡片；首次同步只建立基线不播报；也可用 /steam set enable_owned_games_notify true 即时切换",
+    "default": false
+  },
+  "owned_games_poll_interval": {
+    "description": "游戏库轮询间隔（秒）-修改后重启AstrBot生效",
+    "type": "int",
+    "hint": "游戏库独立轮询间隔，默认 1800 秒（30 分钟），最小 600 秒；与主状态轮询分开一条独立路径",
+    "default": 1800
+  },
+  "owned_games_include_free": {
+    "description": "游戏库包含免费游戏",
+    "type": "bool",
+    "hint": "是否包含玩过的免费游戏（include_played_free_games），默认开启",
+    "default": true
+  },
+  "owned_games_max_per_notify": {
+    "description": "单轮最多渲染卡片数",
+    "type": "int",
+    "hint": "单轮每位玩家最多渲染几张新入库卡片（1-20），超出的新增只发文本；默认 5",
+    "default": 5
+  },
+  "owned_games_daily_budget": {
+    "description": "游戏库每日API预算",
+    "type": "int",
+    "hint": "每日游戏库相关 Steam API 调用上限（按凌晨4点分界），超出暂停到次日；默认 3000",
+    "default": 3000
+  },
+  "owned_games_ignore_appids": {
+    "description": "游戏库忽略的AppID",
+    "type": "string",
+    "hint": "逗号分隔 appid，这些游戏入库时不播报（如工具/测试软件），默认空",
+    "default": ""
+  },
+  "owned_games_grace_days": {
+    "description": "游戏库抖动抑制窗口（天）",
+    "type": "int",
+    "hint": "免费周末等临时入库又移除的游戏，在此窗口内重现不重复播报；默认 7 天",
+    "default": 7
   }
 }
