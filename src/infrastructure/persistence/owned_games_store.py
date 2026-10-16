@@ -64,15 +64,26 @@ class OwnedGamesStore:
             if not isinstance(item, dict) or item.get("appid") is None:
                 continue
             try:
-                pending.append({
+                entry = {
                     "appid": str(item["appid"]),
                     "name": str(item.get("name") or f"AppID {item['appid']}"),
                     "added_at": int(item.get("added_at") or 0),
                     "tries": int(item.get("tries") or 0),
+                    "render": bool(item.get("render", True)),
                     "groups": [str(g) for g in (item.get("groups") or [])],
-                })
+                    "deliveries": [],
+                }
             except (TypeError, ValueError):
                 continue
+            for delivery in item.get("deliveries") or []:
+                if isinstance(delivery, dict) and isinstance(delivery.get("noti"), dict):
+                    entry["deliveries"].append({
+                        "group_id": str(delivery.get("group_id") or ""),
+                        "noti": delivery["noti"],
+                    })
+            if isinstance(item.get("card_data"), dict):
+                entry["card_data"] = item["card_data"]
+            pending.append(entry)
         grace = {}
         for appid, stamp in (state.get("grace") or {}).items():
             try:
@@ -85,6 +96,19 @@ class OwnedGamesStore:
             fail_count = int(state.get("fail_count") or 0)
         except (TypeError, ValueError):
             baseline_at = last_ok_at = fail_count = 0
+        recent = []
+        for entry in state.get("recent") or []:
+            if not isinstance(entry, dict) or entry.get("appid") is None:
+                continue
+            try:
+                recent.append({
+                    "appid": str(entry["appid"]),
+                    "name": str(entry.get("name") or f"AppID {entry['appid']}"),
+                    "added_at": int(entry.get("added_at") or 0),
+                })
+            except (TypeError, ValueError):
+                continue
+        recent = recent[-20:]
         return {
             "ids": ids,
             "baseline_at": baseline_at,
@@ -92,6 +116,7 @@ class OwnedGamesStore:
             "fail_count": fail_count,
             "grace": grace,
             "pending": pending,
+            "recent": recent,
         }
 
     @staticmethod
@@ -104,6 +129,7 @@ class OwnedGamesStore:
             "fail_count": 0,
             "grace": {},
             "pending": [],
+            "recent": [],
         }
 
     # ---------- 保存 ----------
