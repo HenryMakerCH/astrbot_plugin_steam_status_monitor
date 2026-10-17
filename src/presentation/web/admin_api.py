@@ -315,7 +315,10 @@ class WebAdminAPI:
                     else:
                         player_agg[sid]["games"].append({"gameid": gid_data["gid"], "name": gid_data["name"], "minutes": gid_data["mins"]})
 
-        rank_data = sorted(player_agg.values(), key=lambda x: -x["total_minutes"])[:25]
+        rank_data = sorted(
+            (item for item in player_agg.values() if item["total_minutes"] > 0),
+            key=lambda x: -x["total_minutes"],
+        )[:25]
         if not rank_data:
             return json_response({"error": "no data"}, status_code=404)
 
@@ -327,8 +330,9 @@ class WebAdminAPI:
                     avatar_map[sid] = state.get("avatarfull") or state.get("avatar")
 
         for pl in rank_data:
-            top = sorted(pl.get("games", []), key=lambda g: -g["minutes"])
-            pl["top_game_id"] = top[0]["gameid"] if top else ""
+            pl["games"].sort(key=lambda game: -game.get("minutes", 0))
+            top = pl["games"][0] if pl["games"] else None
+            pl["top_game_id"] = top["gameid"] if top else ""
             pl["avatar_url"] = avatar_map.get(pl["sid"])
 
         # Cover fetcher — 复用插件实例的 get_game_cover_url（水平封面 from Steam Store）
@@ -499,7 +503,7 @@ class WebAdminAPI:
         group_id = str(request.query.get("group_id", "")).strip()
         groups = getattr(self.plugin, "group_steam_ids", {}) or {}
         if group_id and group_id not in groups:
-            return error_response("群组不存在", status=404)
+            return error_response("群组不存在", status_code=404)
         now = datetime.now()
         return await self._cached_response(
             ("heatmap", period, group_id or "all", now.strftime("%Y-%m-%d-%H")),
