@@ -156,6 +156,11 @@ async function loadDashboardCharts(){
 // ====== Gantt ======
 const GC=["#5aa9d6","#b2d430","#e8a030","#b37cd4","#e05050","#50c8c8","#ff8c60","#60b0e0","#e0a0c0","#80d080","#d0b060","#90c0f0"];
 function gch(gid){let h=0;for(let i=0;i<gid.length;i++)h=((h<<5)-h)+gid.charCodeAt(i);return GC[Math.abs(h)%GC.length]}
+let ganttState={days:1,offset:0,activeGames:new Set(),sessions:[],players:[],timeRange:{}};
+function ganttWeekday(d){return["周日","周一","周二","周三","周四","周五","周六"][d.getDay()]}
+function ganttDateText(d){return`${d.getMonth()+1}/${d.getDate()}`}
+function ganttClock(ts){const d=new Date(ts);return`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`}
+function ganttParse(value){if(!value)return null;const d=new Date(String(value).replace(" ","T"));return isNaN(d.getTime())?null:d}
 async function renderGantt(){
   const c=document.getElementById("content");
   c.innerHTML=`<div class="flex-between mb-20"><h2 class="page-title">甘特图</h2>
@@ -163,28 +168,87 @@ async function renderGantt(){
       <button class="tab-btn active" data-d="1" data-o="0">今天</button><button class="tab-btn" data-d="1" data-o="-1">昨天</button>
       <button class="tab-btn" data-d="7" data-o="0">近7天</button><button class="tab-btn" data-d="30" data-o="0">近30天</button>
     </div></div>
-    <div class="card"><div id="gantt-chart" class="gantt-container"></div></div>
-    <div id="gantt-legend" style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px"></div>`;
+    <div class="card gantt-card"><div class="gantt-meta" id="gantt-meta">正在统计…</div><div id="gantt-chart" class="gantt-container"></div></div>
+    <div id="gantt-legend" class="gantt-legend"></div>`;
+  ganttState={days:1,offset:0,activeGames:new Set(),sessions:[],players:[],timeRange:{}};
   await loadGantt(1,0);
-  document.querySelectorAll("#gantt-tabs .tab-btn").forEach(btn=>{btn.addEventListener("click",async()=>{document.querySelectorAll("#gantt-tabs .tab-btn").forEach(b=>b.classList.remove("active"));btn.classList.add("active");await loadGantt(parseInt(btn.dataset.d),parseInt(btn.dataset.o))})});
+  document.querySelectorAll("#gantt-tabs .tab-btn").forEach(btn=>{btn.addEventListener("click",async()=>{document.querySelectorAll("#gantt-tabs .tab-btn").forEach(b=>b.classList.remove("active"));btn.classList.add("active");ganttState.activeGames=new Set();await loadGantt(parseInt(btn.dataset.d),parseInt(btn.dataset.o))})});
 }
 async function loadGantt(days,offset){
+  ganttState.days=days;ganttState.offset=offset;
   const data=await API.get(`/api/gantt/data?days=${days}&offset=${offset}`);
-  const players=data.players||[];
-  const gs={};players.forEach(p=>(p.sessions||[]).forEach(s=>{gs[s.gameid]=s.game_name}));
-  const leg=document.getElementById("gantt-legend");
-  leg.innerHTML=Object.keys(gs).map(gid=>`<span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary)"><span style="width:12px;height:12px;border-radius:2px;background:${gch(gid)};display:inline-block"></span>${escapeHtml(gs[gid])}</span>`).join("");
+  const players=data.players||[];const sessions=[];
+  players.forEach((p,pi)=>(p.sessions||[]).forEach(s=>{if(s.start>0&&s.end>0)sessions.push({pi,player:p.name,start:Number(s.start),end:Number(s.end),gameid:String(s.gameid||""),game_name:s.game_name||s.gameid||"未知游戏",duration_min:Number(s.duration_min||0)})}));
+  ganttState.players=players;ganttState.sessions=sessions;ganttState.timeRange=data.time_range||{};
+  const totalMinutes=sessions.reduce((sum,s)=>sum+s.duration_min,0);
+  const meta=document.getElementById("gantt-meta");const tr=ganttState.timeRange;
+  if(meta)meta.textContent=sessions.length?`${tr.start||""} – ${tr.end||""} · ${players.length} 位玩家 · ${sessions.length} 段会话 · 合计 ${formatDuration(totalMinutes)}`:"暂无会话记录";
+  ganttBuildLegend();
   const chart=initChart("gantt-chart");if(!chart)return;
-  if(!players.length){chart.clear();leg.innerHTML='<span style="color:var(--text-muted)">暂无记录</span>';return}
-  const names=players.map(p=>p.name);const sd=[];
-  players.forEach((p,pi)=>(p.sessions||[]).forEach(s=>{if(s.start>0&&s.end>0)sd.push({name:p.name,value:[pi,new Date(s.start*1000),new Date(s.end*1000)],game_name:s.game_name,duration_min:s.duration_min,gameid:s.gameid,itemStyle:{color:gch(s.gameid)}})}));
-  if(!sd.length){chart.clear();return}
-  const mT=data.time_range?new Date(data.time_range.start):new Date();const xT=data.time_range?new Date(data.time_range.end):new Date();
-  chart.setOption({...steamTheme(),tooltip:{formatter:p=>{const sd=new Date(p.data.value[1]).toTimeString().slice(0,5);const ed=new Date(p.data.value[2]).toTimeString().slice(0,5);return`<b>${escapeHtml(p.name)}</b> - ${escapeHtml(p.data.game_name)}<br/>${sd} → ${ed}<br/>时长: ${formatDuration(p.data.duration_min)}`}},grid:{left:140,right:30,top:20,bottom:50},
-    xAxis:{type:"time",min:mT,max:xT,axisLabel:{color:"#aeb9c2",formatter:v=>{const d=new Date(v);return`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`}},splitLine:{show:true,lineStyle:{color:"rgba(255,255,255,0.06)",type:"dashed"}}},
-    yAxis:{type:"category",data:names,axisLabel:{color:"#e1e8ed",width:120,overflow:"truncate"}},
-    series:[{type:"custom",renderItem:(p,api)=>{const ci=api.value(0);const s=api.coord([api.value(1),ci]);const e=api.coord([api.value(2),ci]);return{type:"rect",shape:{x:s[0],y:s[1]-11,width:Math.max(e[0]-s[0],4),height:22},style:{fill:api.style().fill,opacity:0.85}}},encode:{x:[1,2],y:0},data:sd}],
-    dataZoom:[{type:"slider",start:0,end:100,height:22,bottom:12,textStyle:{color:"#aeb9c2"}}]});
+  if(!sessions.length){chart.clear();return}
+  ganttDraw(chart);
+}
+function ganttBuildLegend(){
+  const leg=document.getElementById("gantt-legend");if(!leg)return;
+  const totals={};
+  ganttState.sessions.forEach(s=>{if(!s.gameid)return;if(!totals[s.gameid])totals[s.gameid]={name:s.game_name,minutes:0};totals[s.gameid].minutes+=s.duration_min});
+  const list=Object.entries(totals).sort((a,b)=>b[1].minutes-a[1].minutes);
+  const top=list.slice(0,10),rest=list.slice(10);
+  const chips=top.map(([gid,item])=>`<button class="gantt-chip" data-gids="${escapeAttr(gid)}" type="button"><i style="background:${gch(gid)}"></i><span>${escapeHtml(item.name)}</span><em>${formatDuration(item.minutes)}</em></button>`);
+  if(rest.length){const gids=rest.map(([gid])=>gid).join(",");const minutes=rest.reduce((sum,[,item])=>sum+item.minutes,0);chips.push(`<button class="gantt-chip is-other" data-gids="${escapeAttr(gids)}" type="button"><i style="background:#6b7683"></i><span>其他 ${rest.length} 款</span><em>${formatDuration(minutes)}</em></button>`)}
+  leg.innerHTML=chips.length?chips.join(""):'<span style="color:var(--text-muted);font-size:12px">暂无记录</span>';
+  leg.querySelectorAll(".gantt-chip").forEach(chip=>chip.addEventListener("click",()=>{
+    const gids=(chip.dataset.gids||"").split(",").filter(Boolean);
+    const active=gids.length&&gids.every(gid=>ganttState.activeGames.has(gid));
+    gids.forEach(gid=>{if(active)ganttState.activeGames.delete(gid);else ganttState.activeGames.add(gid)});
+    ganttApplyFilter();
+  }));
+}
+function ganttApplyFilter(){
+  const leg=document.getElementById("gantt-legend");
+  if(leg)leg.querySelectorAll(".gantt-chip").forEach(chip=>{
+    const gids=(chip.dataset.gids||"").split(",").filter(Boolean);
+    const active=gids.length&&gids.every(gid=>ganttState.activeGames.has(gid));
+    chip.classList.toggle("is-active",active);
+    chip.classList.toggle("is-dim",ganttState.activeGames.size>0&&!active);
+  });
+  const chart=echarts.getInstanceByDom(document.getElementById("gantt-chart"));
+  if(chart)ganttDraw(chart);
+}
+function ganttDraw(chart){
+  const sessions=ganttState.sessions||[],players=ganttState.players||[];
+  if(!sessions.length){chart.clear();return}
+  const tr=ganttState.timeRange||{};
+  let start=ganttParse(tr.start),end=ganttParse(tr.end);
+  if(!start)start=new Date(Math.min(...sessions.map(s=>s.start))*1000);
+  if(!end)end=new Date(Math.max(...sessions.map(s=>s.end))*1000);
+  const spanMs=Math.max(end.getTime()-start.getTime(),3600000);
+  const active=ganttState.activeGames;const todayKey=new Date().toDateString();
+  const dayStarts=[];
+  for(let cursor=new Date(start.getFullYear(),start.getMonth(),start.getDate());cursor<end;cursor=new Date(cursor.getFullYear(),cursor.getMonth(),cursor.getDate()+1))dayStarts.push(new Date(cursor));
+  const bands=dayStarts.map((d,i)=>{
+    const next=new Date(d.getFullYear(),d.getMonth(),d.getDate()+1);
+    const isToday=d.toDateString()===todayKey;
+    const color=isToday?"rgba(102,217,139,0.06)":(i%2===0?"rgba(255,255,255,0.018)":"rgba(255,255,255,0)");
+    return[{xAxis:Math.max(d.getTime(),start.getTime()),itemStyle:{color}},{xAxis:Math.min(next.getTime(),end.getTime())}];
+  });
+  const labelEvery=Math.max(1,Math.ceil(dayStarts.length/8));
+  const marks=dayStarts.map((d,i)=>{
+    const isToday=d.toDateString()===todayKey;
+    const x=i===0?Math.max(d.getTime(),start.getTime()):d.getTime();
+    return{name:`${ganttDateText(d)}\n${isToday?"今天":ganttWeekday(d)}`,xAxis:x,label:{show:i%labelEvery===0||isToday,color:isToday?"#8be9a8":"#93a4b2",fontSize:11,lineHeight:14,position:"insideEndTop"},lineStyle:{color:"rgba(255,255,255,0.06)",width:0.5}};
+  });
+  const zoomStart=spanMs>8*86400000?Math.max(0,100-(3/(spanMs/86400000))*100):0;
+  chart.setOption({...steamTheme(),animationDuration:200,
+    grid:{left:112,right:26,top:46,bottom:58},
+    tooltip:{trigger:"item",backgroundColor:"#111a23",borderColor:"#2e4254",borderWidth:1,textStyle:{color:"#e1e8ed",fontSize:12},extraCssText:"border-radius:8px",formatter:p=>{const s=new Date(p.data.value[1]),e=new Date(p.data.value[2]);const same=s.toDateString()===e.toDateString();const date=`${ganttDateText(s)}${same?"":` – ${ganttDateText(e)}`}`;return`<b>${escapeHtml(p.name)}</b> · ${escapeHtml(p.data.game_name)}<br/>${date} ${ganttClock(s.getTime())} → ${ganttClock(e.getTime())}<br/>时长 ${formatDuration(p.data.duration_min)}`}},
+    xAxis:{type:"time",min:start.getTime(),max:end.getTime(),axisLine:{lineStyle:{color:"#2a475e"}},axisTick:{show:false},axisLabel:{show:spanMs<=8*86400000,color:"#7f8c99",fontSize:10,hideOverlap:true,formatter:v=>{const d=new Date(v);if(d.getMinutes()!==0)return"";const step=spanMs<=2*86400000?3:6;if(d.getHours()%step!==0)return"";return`${String(d.getHours()).padStart(2,"0")}:00`}},splitLine:{show:false}},
+    yAxis:{type:"category",data:players.map(p=>p.name),axisLabel:{color:"#dfe7ee",fontSize:12,width:96,overflow:"truncate",formatter:v=>String(v).length>8?`${String(v).slice(0,8)}…`:v},axisTick:{show:false},axisLine:{show:false},splitArea:{show:true,areaStyle:{color:["rgba(255,255,255,0.012)","rgba(255,255,255,0)"]}}},
+    dataZoom:[{type:"inside",start:zoomStart,end:100},{type:"slider",height:18,bottom:10,start:zoomStart,end:100,borderColor:"#223140",backgroundColor:"#111a23",fillerColor:"rgba(90,169,214,0.16)",handleStyle:{color:"#5aa9d6",borderColor:"#5aa9d6"},moveHandleStyle:{color:"#2a475e"},dataBackground:{lineStyle:{color:"#2a475e"},areaStyle:{color:"rgba(90,169,214,0.10)"}},selectedDataBackground:{lineStyle:{color:"#5aa9d6"},areaStyle:{color:"rgba(90,169,214,0.22)"}},textStyle:{color:"#7f8c99",fontSize:10}}],
+    series:[{type:"custom",renderItem:(params,api)=>{const row=api.value(0);const s=api.coord([api.value(1),row]);const e=api.coord([api.value(2),row]);const h=Math.min(20,Math.max(10,api.size([0,1])[1]*0.42));const w=Math.max(e[0]-s[0],6);return{type:"rect",shape:{x:s[0],y:s[1]-h/2,width:w,height:h,r:3},style:api.style()}},encode:{x:[1,2],y:0},
+      data:sessions.map(s=>({name:s.player,value:[s.pi,new Date(s.start*1000),new Date(s.end*1000)],gameid:s.gameid,game_name:s.game_name,duration_min:s.duration_min,itemStyle:{color:gch(s.gameid||"0"),opacity:active.size&&!active.has(s.gameid)?0.12:0.95}})),
+      markArea:{silent:true,data:bands},
+      markLine:{silent:true,symbol:"none",animation:false,label:{show:false},data:marks}}]});
 }
 
 // ====== Heatmap ======

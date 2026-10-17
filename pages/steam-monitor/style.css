@@ -182,6 +182,15 @@ textarea.form-input { resize:vertical; min-height:80px; }
 
 /* Gantt */
 .gantt-container { width:100%; height:520px; }
+.gantt-card { padding:14px 16px 8px; }
+.gantt-meta { margin:0 2px 6px; color:var(--text-muted); font-size:11px; letter-spacing:.2px; }
+.gantt-legend { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+.gantt-chip { display:inline-flex; align-items:center; gap:6px; padding:5px 9px; color:#9aa8b5; background:#121c26; border:1px solid #223140; border-radius:999px; font-size:11px; cursor:pointer; transition:.15s ease; }
+.gantt-chip i { width:9px; height:9px; border-radius:2px; display:inline-block; }
+.gantt-chip em { color:#71808d; font-style:normal; font-size:10px; }
+.gantt-chip:hover { border-color:#3f7f9e; color:#d6e4ee; }
+.gantt-chip.is-active { border-color:#5aa9d6; background:rgba(90,169,214,0.16); color:#d9f0ff; }
+.gantt-chip.is-dim { opacity:.42; }
 
 /* Groups */
 .groups-layout { display:grid; grid-template-columns:220px 1fr; gap:20px; }
