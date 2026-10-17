@@ -188,7 +188,7 @@ async function loadGantt(days,offset){
 }
 
 // ====== Heatmap ======
-let heatmapState={period:90,group:"",selectedDate:""};
+let heatmapState={period:90,group:"",selectedDate:"",activityOpen:false};
 function toWholeMinutes(value){
   let minutes;
   try{minutes=Number(value)}catch(_){return 0}
@@ -212,20 +212,62 @@ async function renderHeatmap(params){
   const c=document.getElementById("content");const groups=data.groups||[];
   c.innerHTML=`<section class="heatmap-page">
     <div class="heatmap-hero"><div><div class="heatmap-eyebrow">STEAM MONITOR</div><h2 class="page-title">团队贡献热力图</h2><p>查看群组每日游戏活跃度，点击日期可展开主要贡献玩家。</p></div>
-      <div class="heatmap-controls"><label>数据范围<select id="heatmap-period"><option value="30">近 30 天</option><option value="90">近 90 天</option><option value="180">近 180 天</option><option value="366">近一年</option></select></label><label>群组<select id="heatmap-group"><option value="">全部群组</option>${groups.map(g=>`<option value="${escapeAttr(g.id)}">群 ${escapeHtml(g.id)} · ${g.player_count} 人</option>`).join("")}</select></label></div></div>
+      <div class="heatmap-controls"><label>数据范围<select id="heatmap-period"><option value="30">近 30 天</option><option value="90">近 90 天</option><option value="180">近 180 天</option><option value="366">近一年</option></select></label><label>群组<select id="heatmap-group"><option value="">全部群组</option>${groups.map(g=>`<option value="${escapeAttr(g.id)}">群 ${escapeHtml(g.id)} · ${g.player_count} 人</option>`).join("")}</select></label><button class="btn btn-sm heatmap-activity-toggle" id="heatmap-activity-toggle" type="button">${heatmapState.activityOpen?"收起活跃热度":"用户平均活跃热度图"}</button></div></div>
     <div class="heatmap-summary"><div><span>累计活跃</span><strong>${formatDuration(Object.values(data.heatmap_data||{}).reduce((a,b)=>a+b,0))}</strong></div><div><span>活跃玩家</span><strong>${(data.players||[]).length}</strong></div><div><span>活跃日期</span><strong>${Object.values(data.heatmap_data||{}).filter(v=>v>0).length}</strong></div></div>
     <div class="heatmap-layout"><div class="card heatmap-calendar-card"><div class="heatmap-card-head"><div><div class="card-title">每日活跃日历</div><p>圆环越明亮代表当日累计游玩时长越高，点击日期查看贡献玩家</p></div><div class="heatmap-legend"><span>少</span><i></i><i></i><i></i><i></i><i></i><span>多</span></div></div><div id="heatmap-cal" class="heatmap-calendar"></div></div>
       <aside class="card heatmap-detail"><div id="heatmap-detail"></div></aside></div>
     <div class="card heatmap-ranking"><div class="heatmap-card-head"><div><div class="card-title">周期贡献排行</div><p>当前范围内累计游玩时长</p></div></div><div id="heatmap-players" class="heatmap-player-grid"></div></div>
+    <div class="card heatmap-activity-card" id="heatmap-activity-card"${heatmapState.activityOpen?"":' style="display:none"'}>
+      <div class="heatmap-card-head"><div><div class="card-title">用户平均活跃热度图</div><p id="heatmap-activity-note">每 10 分钟一个时段 · 平均同时游戏人数与峰值</p></div></div>
+      <div id="heatmap-activity" class="chart-box-lg heatmap-activity-chart"></div>
+    </div>
   </section>`;
   const periodSelect=document.getElementById("heatmap-period"),groupSelect=document.getElementById("heatmap-group");periodSelect.value=String(heatmapState.period);groupSelect.value=data.selected_group||"";
   periodSelect.addEventListener("change",()=>renderHeatmap({period:periodSelect.value,group:groupSelect.value}));groupSelect.addEventListener("change",()=>renderHeatmap({period:periodSelect.value,group:groupSelect.value}));
+  const activityToggle=document.getElementById("heatmap-activity-toggle");
+  if(activityToggle)activityToggle.addEventListener("click",()=>{
+    heatmapState.activityOpen=!heatmapState.activityOpen;
+    const card=document.getElementById("heatmap-activity-card");
+    if(card)card.style.display=heatmapState.activityOpen?"":"none";
+    activityToggle.textContent=heatmapState.activityOpen?"收起活跃热度":"用户平均活跃热度图";
+    if(heatmapState.activityOpen)loadHeatmapActivity(true);else disposeChart("heatmap-activity");
+  });
+  if(heatmapState.activityOpen)loadHeatmapActivity();
   const hd=data.heatmap_data||{},dates=Object.keys(hd).sort(),activeDates=dates.filter(d=>hd[d]>0);if(!heatmapState.selectedDate||!Object.prototype.hasOwnProperty.call(hd,heatmapState.selectedDate))heatmapState.selectedDate=activeDates[activeDates.length-1]||dates[dates.length-1]||"";
   const showDay=date=>{heatmapState.selectedDate=date;document.querySelectorAll(".heatmap-day-contributor").forEach(el=>el.remove());const detail=document.getElementById("heatmap-detail"),players=(data.daily_contributors||{})[date]||[],total=hd[date]||0;detail.innerHTML=`<div class="heatmap-detail-date"><span>${date?heatmapDateLabel(date):"选择日期"}</span><small>${date||"点击日历中的方块"}</small></div><div class="heatmap-detail-total"><span>当日累计</span><strong>${formatDuration(total)}</strong></div><div class="heatmap-contributors">${players.length?players.map((p,i)=>{const top=(p.games||[])[0];const pct=total?Math.round(p.total_minutes/total*100):0;return`<button class="heatmap-contributor" onclick="navigateTo('heatmap',{player:${jsArg(p.sid)}})"><span class="heatmap-rank">${i+1}</span><span class="heatmap-contributor-avatar" data-day-sid="${escapeAttr(p.sid)}"><span class="mdi mdi-account"></span></span><span class="heatmap-contributor-main"><b>${escapeHtml(p.name)}</b><small>${top?escapeHtml(top.name):"游戏记录"} · ${pct}%</small><i><em style="width:${pct}%"></em></i></span><strong>${formatDuration(p.total_minutes)}</strong></button>`}).join(""):'<div class="heatmap-empty"><span class="mdi mdi-calendar-blank"></span><p>当日暂无游玩记录</p></div>'}</div>`;Promise.all(players.map(p=>loadAvatar(p.sid).then(av=>{const el=document.querySelector(`[data-day-sid="${CSS.escape(String(p.sid))}"]`);if(el&&av)el.innerHTML=`<img src="${safeImageUrl(av)}">`})))};
   if(dates.length){const calendar=document.getElementById("heatmap-cal"),maxV=Math.max(...Object.values(hd),60),start=new Date(`${dates[0]}T00:00:00`),end=new Date(`${dates[dates.length-1]}T00:00:00`),today=new Date().toLocaleDateString("en-CA"),months=[];for(let cursor=new Date(start.getFullYear(),start.getMonth(),1);cursor<=end;cursor.setMonth(cursor.getMonth()+1))months.push([cursor.getFullYear(),cursor.getMonth()+1]);calendar.innerHTML=months.map(([year,month])=>{const monthKey=`${year}-${String(month).padStart(2,"0")}`,days=new Date(year,month,0).getDate(),cells=[];for(let day=1;day<=days;day++){const date=`${monthKey}-${String(day).padStart(2,"0")}`;if(date<dates[0]||date>dates[dates.length-1])continue;const minutes=toWholeMinutes(hd[date]),level=minutes<=0?0:Math.max(1,Math.min(5,Math.ceil(minutes/maxV*5))),selected=date===heatmapState.selectedDate?" is-selected":"",todayBadge=date===today?'<span class="heatmap-today">今天</span>':"";cells.push(`<button class="heatmap-day-circle level-${level}${selected}" data-date="${date}" type="button" title="${date} · ${formatDuration(minutes)}"><strong>${day}</strong><span>${minutes?`+${minutes<60?`${minutes}m`:`${(minutes/60).toFixed(1)}h`}`:"0h"}</span>${todayBadge}</button>`)}return`<section class="heatmap-month"><h3>${year} 年 ${month} 月</h3><div class="heatmap-circle-grid">${cells.join("")}</div></section>`}).join("");calendar.querySelectorAll(".heatmap-day-circle").forEach(el=>el.addEventListener("click",()=>{calendar.querySelectorAll(".heatmap-day-circle").forEach(day=>day.classList.remove("is-selected"));el.classList.add("is-selected");showDay(el.dataset.date)}))}
   showDay(heatmapState.selectedDate);
   const pd=document.getElementById("heatmap-players"),players=data.players||[];pd.innerHTML=players.length?players.map((p,i)=>`<button class="heatmap-player-card" data-sid="${escapeAttr(p.sid)}" onclick="navigateTo('heatmap',{player:${jsArg(p.sid)}})"><span class="heatmap-player-position">${String(i+1).padStart(2,"0")}</span><span class="player-avatar"><span class="mdi mdi-account"></span></span><span><b>${escapeHtml(p.name)}</b><small>${escapeHtml(p.sid)}</small></span><strong>${formatDuration(p.total_minutes)}</strong></button>`).join(""):'<div class="empty-state"><span class="mdi mdi-calendar-blank"></span><p>当前范围暂无记录</p></div>';
   Promise.all(players.map(p=>loadAvatar(p.sid).then(av=>{const card=document.querySelector(`.heatmap-player-card[data-sid="${CSS.escape(String(p.sid))}"]`);if(card&&av)card.querySelector(".player-avatar").innerHTML=`<img src="${safeImageUrl(av)}">`})));
+}
+async function loadHeatmapActivity(force=false){
+  const el=document.getElementById("heatmap-activity");if(!el)return;
+  const key=`${heatmapState.period}|${heatmapState.group}`;
+  if(!force&&el.dataset.key===key)return;
+  el.innerHTML='<div class="page-loading">正在统计活跃时段…</div>';
+  try{
+    const query=new URLSearchParams({period:String(heatmapState.period)});if(heatmapState.group)query.set("group_id",heatmapState.group);
+    const data=await API.get(`/api/heatmap/activity?${query.toString()}`);
+    const buckets=data.buckets||[];const summary=data.summary||{};
+    const noteEl=document.getElementById("heatmap-activity-note");
+    if(noteEl)noteEl.textContent=`每 10 分钟一个时段 · 最近 ${data.days} 天（有效 ${data.days_with_data} 天）· 平均同时在线 ${summary.avg_online??0} 人 · 峰值 ${summary.peak??0} 人${data.note?` · ${data.note}`:""}`;
+    if(!buckets.length||!summary.sessions){el.innerHTML='<div class="empty-state"><p>当前范围没有可用于统计的会话记录</p></div>';return}
+    const step=Number(data.bucket_minutes||10);
+    const labels=buckets.map(b=>b.label);
+    const chart=initChart("heatmap-activity");if(!chart)return;
+    chart.setOption({...steamTheme(),
+      grid:{left:52,right:52,top:38,bottom:62},
+      tooltip:{trigger:"axis",backgroundColor:"#1e2c38",borderColor:"#2e4254",borderWidth:1,extraCssText:"border-radius:8px",formatter:items=>{const i=(items&&items[0])?items[0].dataIndex:0;const b=buckets[i]||{};const endMinute=(b.start_minute??0)+step;const endLabel=`${String(Math.floor(endMinute/60)%24).padStart(2,"0")}:${String(endMinute%60).padStart(2,"0")}`;return`<b>${b.label} - ${endLabel}</b><br/>平均 ${b.avg} 人 · 峰值 ${b.peak} 人`}},
+      legend:{data:["平均同时在线","峰值"],textStyle:{color:"#aeb9c2"},top:2},
+      xAxis:{type:"category",data:labels,axisTick:{show:false},axisLine:{lineStyle:{color:"#2a475e"}},axisLabel:{color:"#aeb9c2",interval:(index)=>index%6===0}},
+      yAxis:[{type:"value",name:"平均",nameTextStyle:{color:"#aeb9c2"},axisLabel:{color:"#aeb9c2"},splitLine:{lineStyle:{color:"rgba(255,255,255,0.06)"}}},{type:"value",name:"峰值",nameTextStyle:{color:"#aeb9c2"},axisLabel:{color:"#aeb9c2"},splitLine:{show:false}}],
+      dataZoom:[{type:"inside",start:0,end:100},{type:"slider",height:16,bottom:16,borderColor:"#243343",fillerColor:"rgba(90,169,214,0.15)",textStyle:{color:"#aeb9c2"}}],
+      series:[
+        {name:"平均同时在线",type:"bar",data:buckets.map(b=>b.avg),barMaxWidth:6,itemStyle:{color:"#5aa9d6",borderRadius:[2,2,0,0]}},
+        {name:"峰值",type:"line",yAxisIndex:1,data:buckets.map(b=>b.peak),smooth:true,symbol:"none",lineStyle:{width:1.5,color:"#b2d430"}}
+      ]});
+    el.dataset.key=key;
+  }catch(e){el.innerHTML='<div class="empty-state"><p>活跃热度统计失败，请稍后重试</p></div>'}
 }
 async function loadAvatar(sid){try{const r=await API.get(`/api/players/avatar/${sid}`);return r.avatar_url||""}catch(e){return""}}
 async function showTooltip(e,sid){

@@ -271,6 +271,10 @@ textarea.form-input { resize:vertical; min-height:80px; }
 .heatmap-player-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:8px; margin-top:15px; }
 .heatmap-player-card { display:grid; grid-template-columns:27px 36px minmax(0,1fr) auto; align-items:center; gap:10px; padding:10px 12px; color:inherit; background:#111a23; border:1px solid #223140; border-radius:8px; text-align:left; cursor:pointer; transition:.15s ease; }
 .heatmap-player-card:hover { border-color:#4aa970; transform:translateY(-1px); }.heatmap-player-position { color:#5d6a76; font:700 11px 'SF Mono',monospace; }.heatmap-player-card b,.heatmap-player-card small { display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }.heatmap-player-card b { color:#e7edf2; font-size:12px; }.heatmap-player-card small { margin-top:2px; color:#687682; font-size:9px; }.heatmap-player-card>strong { color:#66d98b; font-size:11px; white-space:nowrap; }
+.heatmap-activity-toggle { align-self:flex-end; border:1px solid #2c6e4b; background:#14301f; color:#9ff0bd; }
+.heatmap-activity-toggle:hover { border-color:#66d98b; color:#d6ffe4; }
+.heatmap-activity-card { margin-top:14px; background:linear-gradient(145deg,#131d27,#101820); border-color:#243343; }
+.heatmap-activity-card .heatmap-activity-chart { height:420px; }
 
 /* Mobile */
 @media (max-width:768px) {
@@ -284,4 +288,6 @@ textarea.form-input { resize:vertical; min-height:80px; }
   .heatmap-layout { grid-template-columns:1fr; }
   .heatmap-calendar { min-height:430px; overflow:auto; }.heatmap-circle-grid { grid-template-columns:repeat(4,minmax(66px,1fr)); gap:15px; }.heatmap-day-circle strong { font-size:19px; }
   .heatmap-player-grid { grid-template-columns:1fr; }
+  .heatmap-activity-card .heatmap-activity-chart { height:340px; }
+  .heatmap-activity-toggle { width:100%; align-self:stretch; }
 }

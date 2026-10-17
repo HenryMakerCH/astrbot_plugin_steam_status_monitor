@@ -13,6 +13,11 @@ def round_minutes(value):
     return round(minutes, 2)
 
 
+BUCKET_MINUTES = 10
+MAX_PROFILE_DAYS = 90
+MAX_SESSION_SPAN_SECONDS = 86400
+
+
 def build_report_window(now, days, offset):
     """Return the report time window using the dashboard's 04:00 day boundary."""
     boundary_today = now.replace(hour=4, minute=0, second=0, microsecond=0)
@@ -237,21 +242,7 @@ def build_heatmap_data(plugin, period, now, group_id=None):
     end_key = end_date.strftime("%Y-%m-%d")
 
     groups = getattr(plugin, "group_steam_ids", {}) or {}
-    push_groups = getattr(plugin, "push_groups", {}) or {}
-    if group_id:
-        direct_ids = groups.get(group_id, [])
-        push_ids = [
-            sid
-            for sid, target_groups in push_groups.items()
-            if str(group_id) in {str(target) for target in target_groups}
-        ]
-        allowed_sids = {str(sid) for sid in [*direct_ids, *push_ids]}
-    else:
-        allowed_sids = {
-            str(sid)
-            for steam_ids in groups.values()
-            for sid in steam_ids
-        } | {str(sid) for sid in push_groups}
+    allowed_sids = _resolve_allowed_sids(plugin, group_id)
     contributions = _build_heatmap_contributions(
         plugin, start_key, end_key, allowed_sids
     )
@@ -314,4 +305,167 @@ def build_heatmap_data(plugin, period, now, group_id=None):
         "players": players,
         "groups": group_options,
         "selected_group": group_id or "",
+    }
+
+
+def _resolve_allowed_sids(plugin, group_id=None):
+    """解析参与统计的 SteamID：群成员 + 该群的联动推送玩家。"""
+    groups = getattr(plugin, "group_steam_ids", {}) or {}
+    push_groups = getattr(plugin, "push_groups", {}) or {}
+    if group_id:
+        direct_ids = groups.get(group_id, [])
+        push_ids = [
+            sid
+            for sid, target_groups in push_groups.items()
+            if str(group_id) in {str(target) for target in target_groups}
+        ]
+        return {str(sid) for sid in [*direct_ids, *push_ids]}
+    return {
+        str(sid) for steam_ids in groups.values() for sid in steam_ids
+    } | {str(sid) for sid in push_groups}
+
+
+def _session_interval(session):
+    """还原会话的绝对起止时间；缺少 start_time 或时长非法时返回 None。"""
+    if not isinstance(session, dict):
+        return None
+    try:
+        start = int(session.get("start_time") or 0)
+    except (TypeError, ValueError):
+        start = 0
+    try:
+        end = int(session.get("end_time") or 0)
+    except (TypeError, ValueError):
+        end = 0
+    try:
+        duration_min = float(session.get("duration_min") or 0)
+    except (TypeError, ValueError):
+        duration_min = 0.0
+    if not math.isfinite(duration_min) or duration_min < 0:
+        duration_min = 0.0
+    if start <= 0:
+        return None
+    if end <= 0:
+        end = start + int(duration_min * 60)
+    if end <= start:
+        return None
+    if end - start > MAX_SESSION_SPAN_SECONDS:
+        end = start + MAX_SESSION_SPAN_SECONDS
+    return start, end
+
+
+def _bucket_label(index, bucket_minutes):
+    start = index * bucket_minutes
+    return f"{start // 60:02d}:{start % 60:02d}"
+
+
+def build_active_profile(plugin, period, now, group_id=None, bucket_minutes=BUCKET_MINUTES):
+    """按自然日统计各时段平均同时游戏人数与单日峰值。
+
+    仅使用 session_records（含精确起止时间），进行中的会话不计入；
+    同一天同一时段按 sid 去重；平均值除以窗口内全部自然日数；
+    周期自动截到 MAX_PROFILE_DAYS（会话记录保留期）。
+    """
+    try:
+        bucket_minutes = int(bucket_minutes or BUCKET_MINUTES)
+    except (TypeError, ValueError):
+        bucket_minutes = BUCKET_MINUTES
+    bucket_minutes = max(1, min(bucket_minutes, 60))
+    buckets_per_day = (24 * 60) // bucket_minutes
+
+    try:
+        requested = int(period or 30)
+    except (TypeError, ValueError):
+        requested = 30
+    requested = max(1, requested)
+    days = min(requested, MAX_PROFILE_DAYS)
+
+    today = now.date()
+    start_day = today - timedelta(days=days - 1)
+    start_ts = datetime(start_day.year, start_day.month, start_day.day).timestamp()
+    end_ts = datetime(today.year, today.month, today.day).timestamp() + 86400
+
+    allowed_sids = _resolve_allowed_sids(plugin, group_id)
+    sessions = getattr(plugin, "session_records", {}) or {}
+    buckets = {}
+    days_with_data = set()
+    total_sessions = 0
+    skipped = 0
+
+    for raw_sid, items in list(sessions.items()):
+        sid = str(raw_sid)
+        if sid not in allowed_sids:
+            continue
+        for session in list(items or []):
+            interval = _session_interval(session)
+            if not interval:
+                skipped += 1
+                continue
+            session_start, session_end = interval
+            if session_end <= start_ts or session_start >= end_ts:
+                continue
+            cursor = max(session_start, start_ts)
+            session_end = min(session_end, end_ts)
+            if session_end <= cursor:
+                continue
+            total_sessions += 1
+            while cursor < session_end:
+                day_start = datetime.fromtimestamp(cursor).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ).timestamp()
+                chunk_end = min(session_end, day_start + 86400)
+                day_index = int(round((day_start - start_ts) / 86400))
+                if 0 <= day_index < days:
+                    first = int((cursor - day_start) // (bucket_minutes * 60))
+                    last = int((chunk_end - 1 - day_start) // (bucket_minutes * 60))
+                    for index in range(
+                        max(0, first), min(buckets_per_day - 1, last) + 1
+                    ):
+                        buckets.setdefault((day_index, index), set()).add(sid)
+                    days_with_data.add(day_index)
+                cursor = chunk_end
+
+    bucket_list = []
+    total_avg = 0.0
+    peak_value = 0
+    peak_label = ""
+    for index in range(buckets_per_day):
+        daily_counts = [
+            len(buckets.get((day_index, index), ()))
+            for day_index in range(days)
+        ]
+        series_avg = sum(daily_counts) / days if days else 0.0
+        bucket_peak = max(daily_counts) if daily_counts else 0
+        total_avg += series_avg
+        label = _bucket_label(index, bucket_minutes)
+        bucket_list.append({
+            "label": label,
+            "start_minute": index * bucket_minutes,
+            "avg": round(series_avg, 2),
+            "peak": bucket_peak,
+        })
+        if bucket_peak > peak_value:
+            peak_value = bucket_peak
+            peak_label = label
+
+    note = ""
+    if requested > MAX_PROFILE_DAYS:
+        note = f"会话记录仅保留最近 {MAX_PROFILE_DAYS} 天，已按最近 {days} 天统计"
+
+    return {
+        "bucket_minutes": bucket_minutes,
+        "buckets": bucket_list,
+        "days": days,
+        "days_with_data": len(days_with_data),
+        "period": days,
+        "requested_period": requested,
+        "selected_group": group_id or "",
+        "summary": {
+            "avg_online": round(total_avg / buckets_per_day, 2) if buckets_per_day else 0.0,
+            "peak": peak_value,
+            "peak_label": peak_label,
+            "sessions": total_sessions,
+            "skipped": skipped,
+        },
+        "note": note,
     }

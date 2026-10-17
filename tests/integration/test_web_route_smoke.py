@@ -176,6 +176,18 @@ class WebRouteSmokeTests(unittest.IsolatedAsyncioTestCase):
                     )
                     status = getattr(response, "status_code", 200)
                     body = getattr(response, "body", b"") or b""
+                    if status < 500 and body:
+                        if path.endswith("/heatmap/activity"):
+                            payload = json.loads(body.decode("utf-8"))
+                            self.assertEqual(len(payload.get("buckets", [])), 144)
+                            self.assertEqual(payload.get("bucket_minutes"), 10)
+                        elif path.endswith("/dashboard/rank-image"):
+                            payload = json.loads(body.decode("utf-8"))
+                            self.assertTrue(
+                                str(payload.get("data_url", "")).startswith(
+                                    "data:image/png;base64,"
+                                )
+                            )
                     elapsed = (time.perf_counter() - started) * 1000
                     rows.append((concrete, status, elapsed, len(body)))
                     if status >= 500:

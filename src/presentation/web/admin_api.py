@@ -20,6 +20,8 @@ from ...shared.network import configure_tls, httpx_client_kwargs
 from ...shared.logging import logger
 from ...shared.utils.notify_session import is_valid_group_id
 from .statistics import (
+    MAX_PROFILE_DAYS,
+    build_active_profile,
     build_dashboard_stats,
     build_groups,
     build_heatmap_data,
@@ -173,6 +175,7 @@ class WebAdminAPI:
         r("GET", "/gantt/data", self._api_gantt_data)
         r("GET", "/heatmap/data", self._api_heatmap_data)
         r("GET", "/heatmap/player/<steamid>", self._api_heatmap_player)
+        r("GET", "/heatmap/activity", self._api_heatmap_activity)
         r("GET", "/groups", self._api_groups_list)
         r("GET", "/groups/names", self._api_groups_names)
         r("POST", "/groups/add", self._api_groups_add)
@@ -509,6 +512,33 @@ class WebAdminAPI:
             ("heatmap", period, group_id or "all", now.strftime("%Y-%m-%d-%H")),
             30,
             lambda: build_heatmap_data(
+                self.plugin, period, now, group_id or None
+            ),
+        )
+
+    async def _api_heatmap_activity(self, request):
+        """用户平均活跃热度：按 10 分钟时段统计平均同时游戏人数与峰值。"""
+        try:
+            period = int(request.query.get("period", "30"))
+        except (ValueError, TypeError):
+            period = 30
+        period = max(1, min(period, 366))
+        effective_days = min(period, MAX_PROFILE_DAYS)
+        group_id = str(request.query.get("group_id", "")).strip()
+        groups = getattr(self.plugin, "group_steam_ids", {}) or {}
+        if group_id and group_id not in groups:
+            return error_response("群组不存在", status_code=404)
+        now = datetime.now()
+        return await self._cached_response(
+            (
+                "heatmap",
+                "activity",
+                effective_days,
+                group_id or "all",
+                now.strftime("%Y-%m-%d-%H"),
+            ),
+            60,
+            lambda: build_active_profile(
                 self.plugin, period, now, group_id or None
             ),
         )
