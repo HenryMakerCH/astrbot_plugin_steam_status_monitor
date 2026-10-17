@@ -222,27 +222,44 @@ function ganttDraw(chart){
   let start=ganttParse(tr.start),end=ganttParse(tr.end);
   if(!start)start=new Date(Math.min(...sessions.map(s=>s.start))*1000);
   if(!end)end=new Date(Math.max(...sessions.map(s=>s.end))*1000);
-  const spanMs=Math.max(end.getTime()-start.getTime(),3600000);
+  const axisStart=new Date(start.getFullYear(),start.getMonth(),start.getDate());
+  const axisStartMs=axisStart.getTime(),axisEndMs=end.getTime();
+  const spanMs=Math.max(axisEndMs-axisStartMs,3600000);
+  const shortSpan=spanMs<=8*86400000;
   const active=ganttState.activeGames;const todayKey=new Date().toDateString();
   const dayStarts=[];
-  for(let cursor=new Date(start.getFullYear(),start.getMonth(),start.getDate());cursor<end;cursor=new Date(cursor.getFullYear(),cursor.getMonth(),cursor.getDate()+1))dayStarts.push(new Date(cursor));
+  for(let cursor=new Date(axisStart);cursor<end;cursor=new Date(cursor.getFullYear(),cursor.getMonth(),cursor.getDate()+1))dayStarts.push(new Date(cursor));
   const bands=dayStarts.map((d,i)=>{
     const next=new Date(d.getFullYear(),d.getMonth(),d.getDate()+1);
     const isToday=d.toDateString()===todayKey;
     const color=isToday?"rgba(102,217,139,0.06)":(i%2===0?"rgba(255,255,255,0.018)":"rgba(255,255,255,0)");
-    return[{xAxis:Math.max(d.getTime(),start.getTime()),itemStyle:{color}},{xAxis:Math.min(next.getTime(),end.getTime())}];
+    return[{xAxis:d.getTime(),itemStyle:{color}},{xAxis:Math.min(next.getTime(),axisEndMs)}];
   });
-  const labelEvery=Math.max(1,Math.ceil(dayStarts.length/8));
-  const marks=dayStarts.map((d,i)=>{
+  const marks=dayStarts.slice(1).map(d=>{
     const isToday=d.toDateString()===todayKey;
-    const x=i===0?Math.max(d.getTime(),start.getTime()):d.getTime();
-    return{name:`${ganttDateText(d)}\n${isToday?"今天":ganttWeekday(d)}`,xAxis:x,label:{show:i%labelEvery===0||isToday,color:isToday?"#8be9a8":"#93a4b2",fontSize:11,lineHeight:14,position:"insideEndTop"},lineStyle:{color:"rgba(255,255,255,0.06)",width:0.5}};
+    return{xAxis:d.getTime(),lineStyle:{color:isToday?"rgba(102,217,139,0.16)":"rgba(255,255,255,0.06)",width:0.5}};
   });
-  const zoomStart=spanMs>8*86400000?Math.max(0,100-(3/(spanMs/86400000))*100):0;
+  const labelStep=shortSpan?1:Math.max(2,Math.ceil((spanMs/86400000)/8));
+  const tickStep=spanMs<=2*86400000?21600000:86400000;
+  const zoomStart=shortSpan?0:Math.max(0,100-(3/(spanMs/86400000))*100);
+  const labelColor=v=>{const d=new Date(v);return d.getMinutes()===0&&d.getHours()===0?(d.toDateString()===todayKey?"#8be9a8":"#aeb9c2"):"#7f8c99"};
   chart.setOption({...steamTheme(),animationDuration:200,
-    grid:{left:112,right:26,top:46,bottom:58},
+    grid:{left:112,right:26,top:22,bottom:70},
     tooltip:{trigger:"item",backgroundColor:"#111a23",borderColor:"#2e4254",borderWidth:1,textStyle:{color:"#e1e8ed",fontSize:12},extraCssText:"border-radius:8px",formatter:p=>{const s=new Date(p.data.value[1]),e=new Date(p.data.value[2]);const same=s.toDateString()===e.toDateString();const date=`${ganttDateText(s)}${same?"":` – ${ganttDateText(e)}`}`;return`<b>${escapeHtml(p.name)}</b> · ${escapeHtml(p.data.game_name)}<br/>${date} ${ganttClock(s.getTime())} → ${ganttClock(e.getTime())}<br/>时长 ${formatDuration(p.data.duration_min)}`}},
-    xAxis:{type:"time",min:start.getTime(),max:end.getTime(),axisLine:{lineStyle:{color:"#2a475e"}},axisTick:{show:false},axisLabel:{show:spanMs<=8*86400000,color:"#7f8c99",fontSize:10,hideOverlap:true,formatter:v=>{const d=new Date(v);if(d.getMinutes()!==0)return"";const step=spanMs<=2*86400000?3:6;if(d.getHours()%step!==0)return"";return`${String(d.getHours()).padStart(2,"0")}:00`}},splitLine:{show:false}},
+    xAxis:{type:"time",min:axisStartMs,max:axisEndMs,minInterval:tickStep,maxInterval:tickStep,axisLine:{lineStyle:{color:"#2a475e"}},axisTick:{show:false},
+      axisLabel:{show:true,color:labelColor,fontSize:10,lineHeight:13,hideOverlap:true,formatter:v=>{
+        const d=new Date(v);
+        if(d.getMinutes()!==0)return"";
+        if(d.getHours()===0){
+          const dayIndex=Math.round((new Date(d.getFullYear(),d.getMonth(),d.getDate()).getTime()-axisStartMs)/86400000);
+          if(dayIndex%labelStep!==0)return"";
+          const isToday=d.toDateString()===todayKey;
+          return shortSpan?`${ganttDateText(d)}\n${isToday?"今天":ganttWeekday(d)}`:`${ganttDateText(d)}`;
+        }
+        if(shortSpan&&d.getHours()%6===0)return`${String(d.getHours()).padStart(2,"0")}:00`;
+        return"";
+      }},
+      splitLine:{show:false}},
     yAxis:{type:"category",data:players.map(p=>p.name),axisLabel:{color:"#dfe7ee",fontSize:12,width:96,overflow:"truncate",formatter:v=>String(v).length>8?`${String(v).slice(0,8)}…`:v},axisTick:{show:false},axisLine:{show:false},splitArea:{show:true,areaStyle:{color:["rgba(255,255,255,0.012)","rgba(255,255,255,0)"]}}},
     dataZoom:[{type:"inside",start:zoomStart,end:100},{type:"slider",height:18,bottom:10,start:zoomStart,end:100,borderColor:"#223140",backgroundColor:"#111a23",fillerColor:"rgba(90,169,214,0.16)",handleStyle:{color:"#5aa9d6",borderColor:"#5aa9d6"},moveHandleStyle:{color:"#2a475e"},dataBackground:{lineStyle:{color:"#2a475e"},areaStyle:{color:"rgba(90,169,214,0.10)"}},selectedDataBackground:{lineStyle:{color:"#5aa9d6"},areaStyle:{color:"rgba(90,169,214,0.22)"}},textStyle:{color:"#7f8c99",fontSize:10}}],
     series:[{type:"custom",renderItem:(params,api)=>{const row=api.value(0);const s=api.coord([api.value(1),row]);const e=api.coord([api.value(2),row]);const h=Math.min(20,Math.max(10,api.size([0,1])[1]*0.42));const w=Math.max(e[0]-s[0],6);return{type:"rect",shape:{x:s[0],y:s[1]-h/2,width:w,height:h,r:3},style:api.style()}},encode:{x:[1,2],y:0},
