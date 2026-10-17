@@ -104,6 +104,7 @@
 ![WebUI 管理后台](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/assets/images/webui.png)
 ![List 玩家列表](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/assets/images/list.png)
 ![价格查询示例](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/assets/images/price.png)
+![游戏库新入库播报](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/assets/images/owned_games.png)
 
 
 ## QQ 官方机器人后台配置面板
