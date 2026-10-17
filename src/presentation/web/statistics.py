@@ -1,4 +1,16 @@
+import math
 from datetime import datetime, timedelta
+
+
+def round_minutes(value):
+    """把分钟值规范为 2 位小数，供 Web API 输出使用。"""
+    try:
+        minutes = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(minutes):
+        return 0.0
+    return round(minutes, 2)
 
 
 def build_report_window(now, days, offset):
@@ -88,8 +100,12 @@ def build_dashboard_stats(plugin, today, last_update):
         "total_bindings": len(bind_data),
         "today_active_players": len(today_records),
         "online_players": online_count,
-        "top_games_today": top_games,
-        "top_players_today": top_players,
+        "top_games_today": [
+            {**item, "minutes": round_minutes(item["minutes"])} for item in top_games
+        ],
+        "top_players_today": [
+            {**item, "minutes": round_minutes(item["minutes"])} for item in top_players
+        ],
         "players": players,
         "last_update": last_update,
     }
@@ -170,7 +186,7 @@ def _build_heatmap_contributions(plugin, start_key, end_key, allowed_sids):
             date_key = session.get("date", "")
             if not start_key <= date_key <= end_key:
                 continue
-            minutes = max(0.0, float(session.get("duration_min", 0) or 0))
+            minutes = max(0.0, round_minutes(session.get("duration_min", 0)))
             if minutes <= 0:
                 continue
             player_day = contributions.setdefault(date_key, {}).setdefault(
@@ -279,6 +295,15 @@ def build_heatmap_data(plugin, period, now, group_id=None):
         ],
         key=lambda item: -item["total_minutes"],
     )
+    for day_players in daily_contributors.values():
+        for player in day_players:
+            player["total_minutes"] = round_minutes(player["total_minutes"])
+            for game in player["games"]:
+                game["minutes"] = round_minutes(game["minutes"])
+    for date_key, total in heatmap_daily.items():
+        heatmap_daily[date_key] = round_minutes(total)
+    for player in players:
+        player["total_minutes"] = round_minutes(player["total_minutes"])
     group_options = [
         {"id": str(group), "player_count": len({str(sid) for sid in steam_ids})}
         for group, steam_ids in groups.items()

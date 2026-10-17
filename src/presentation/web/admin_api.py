@@ -25,6 +25,7 @@ from .statistics import (
     build_heatmap_data,
     build_player_search_index,
     build_report_window,
+    round_minutes,
 )
 from astrbot.core.star.command_management import (
     list_commands,
@@ -404,7 +405,7 @@ class WebAdminAPI:
                     "game_name": s.get("game_name", "Unknown"),
                     "start": s_start,
                     "end": s_end,
-                    "duration_min": s.get("duration_min", 0),
+                    "duration_min": round_minutes(s.get("duration_min", 0)),
                 })
             if sid_sessions:
                 player_map[sid] = {"sid": sid, "name": _get_player_display_name(p, sid), "sessions": sid_sessions}
@@ -435,7 +436,7 @@ class WebAdminAPI:
                         "game_name": gname,
                         "start": offset_ts,
                         "end": min(offset_ts + span, day_start_ts + 24 * 3600),
-                        "duration_min": mins,
+                        "duration_min": round_minutes(mins),
                     })
                     offset_ts += span
 
@@ -458,6 +459,8 @@ class WebAdminAPI:
         for gid, info in game_details.items():
             info["players"].sort(key=lambda x: -x["minutes"])
             info["players"] = info["players"][:5]
+            for player in info["players"]:
+                player["minutes"] = round_minutes(player["minutes"])
 
         # 从游戏封面提取主色调（饼图着色用）
         game_colors = {}
@@ -587,6 +590,25 @@ class WebAdminAPI:
             [{"gameid": v["gameid"], "name": v["name"], "minutes": v["minutes"]} for v in game_totals.values()],
             key=lambda x: -x["minutes"],
         )[:10]
+        top_games = [
+            {
+                "gameid": item["gameid"],
+                "name": item["name"],
+                "minutes": round_minutes(item["minutes"]),
+            }
+            for item in top_games
+        ]
+        heatmap_daily = {
+            day_key: round_minutes(value) for day_key, value in heatmap_daily.items()
+        }
+        heatmap_hourly = {
+            day_key: {
+                hour_key: round_minutes(value)
+                for hour_key, value in hours.items()
+            }
+            for day_key, hours in heatmap_hourly.items()
+        }
+        total_minutes = round_minutes(total_minutes)
 
         return json_response({
             "sid": steamid,
@@ -1179,10 +1201,10 @@ class WebAdminAPI:
         today_games = []
         today_data = play_records.get(today, {}).get(steamid, {})
         for gid, ginfo in today_data.items():
-            today_games.append({
-                "name": ginfo.get("name", str(gid)) if isinstance(ginfo, dict) else str(gid),
-                "minutes": ginfo.get("minutes", 0) if isinstance(ginfo, dict) else 0,
-            })
+                    today_games.append({
+                        "name": ginfo.get("name", str(gid)) if isinstance(ginfo, dict) else str(gid),
+                        "minutes": round_minutes(ginfo.get("minutes", 0)) if isinstance(ginfo, dict) else 0,
+                    })
 
         # Steam 个人资料链接 (通过 SteamID)
         sid_num = int(steamid) if steamid.isdigit() else None
@@ -1193,7 +1215,7 @@ class WebAdminAPI:
             "name": name,
             "current_game": current_game,
             "personastate": personastate,
-            "total_minutes": total_minutes,
+            "total_minutes": round_minutes(total_minutes),
             "total_sessions": total_sessions,
             "today_games": today_games,
             "profile_url": profile_url,
