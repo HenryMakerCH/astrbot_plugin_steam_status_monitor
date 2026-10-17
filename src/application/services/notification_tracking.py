@@ -11,6 +11,7 @@ from ...shared.logging import logger
 from ...shared.utils.notify_session import is_sendable_group_session
 from ...presentation.renderers.game_start import render_game_start
 from ...presentation.renderers.game_end import render_game_end
+from ...presentation.renderers.owned_game import render_owned_game
 
 
 class NotificationTrackingMixin:
@@ -60,7 +61,21 @@ class NotificationTrackingMixin:
 
     async def _render_notification_image(self, noti):
         try:
-            if noti["type"] == "start":
+            if noti["type"] == "owned":
+                if not noti.get("render", True):
+                    return None  # 超出单轮卡片上限的新增：仅文本，不渲染图片
+                img_bytes = await render_owned_game(
+                    self.data_dir, noti["sid"], noti["name"], noti.get("avatar_url"),
+                    noti.get("gameid"), noti.get("game") or "未知游戏",
+                    owned_count=noti.get("owned_count") or 0,
+                    card_data=noti.get("card_data"),
+                    added_at=noti.get("added_at"),
+                    api_key=self.API_KEY, sgdb_api_key=self.SGDB_API_KEY,
+                    sgdb_api_base=self.SGDB_API_BASE, steam_store_base=self.STEAM_STORE_BASE,
+                    steam_api_base=self.STEAM_API_BASE, proxy=self.proxy,
+                    version=self._plugin_version,
+                )
+            elif noti["type"] == "start":
                 status = noti.get("status", {})
                 avatar_url = status.get("avatarfull") or status.get("avatar")
                 superpower = self.superpower.get(noti["sid"])
@@ -100,6 +115,8 @@ class NotificationTrackingMixin:
         event_time = notification.get("start_time")
         if notification.get("type") == "end":
             event_time = notification.get("quit_time")
+        elif notification.get("type") == "owned":
+            event_time = notification.get("added_at")
         return (
             str(session),
             str(notification.get("sid")),
@@ -160,6 +177,11 @@ class NotificationTrackingMixin:
             for notification in matched_notifications:
                 if notification["type"] == "start":
                     line = f"🟢【{notification['name']}】开始游玩 {notification['game']}\n"
+                elif notification["type"] == "owned":
+                    line = (
+                        f"📚【{notification['name']}】新入库 {notification['game']}"
+                        f"（当前共 {notification.get('owned_count') or 0} 款）\n"
+                    )
                 else:
                     line = f"👋 {notification['name']} 不玩 {notification['game']}，游玩时间 {notification['duration_str']}\n"
                 if self.config.get("notify_send_text", True):

@@ -9,6 +9,7 @@ from src.presentation.web.statistics import (
     build_heatmap_data,
     build_player_search_index,
     build_report_window,
+    round_minutes,
 )
 
 
@@ -136,6 +137,64 @@ class StatisticsTests(unittest.TestCase):
         )
 
         self.assertEqual(result["heatmap_data"]["2026-08-21"], 30)
+
+    def test_heatmap_rounds_fractional_minutes_in_output(self):
+        start = int(datetime(2026, 8, 20, 18).timestamp())
+        self.plugin.session_records["sid-1"] = [
+            {"date": "2026-08-20", "duration_min": 10.23, "start_time": start,
+             "gameid": "730", "game_name": "CS2"},
+            {"date": "2026-08-20", "duration_min": 8.74, "start_time": start + 600,
+             "gameid": "730", "game_name": "CS2"},
+        ]
+
+        result = build_heatmap_data(self.plugin, 3, datetime(2026, 8, 21, 12))
+
+        self.assertEqual(result["heatmap_data"]["2026-08-20"], 18.97)
+        contributor = result["daily_contributors"]["2026-08-20"][0]
+        self.assertEqual(contributor["total_minutes"], 18.97)
+        self.assertEqual(contributor["games"][0]["minutes"], 18.97)
+        self.assertEqual(result["players"][0]["total_minutes"], 78.97)
+
+    def test_heatmap_output_has_at_most_two_decimals(self):
+        start = int(datetime(2026, 8, 20, 18).timestamp())
+        self.plugin.session_records["sid-1"] = [
+            {"date": "2026-08-20", "duration_min": 0.1, "start_time": start,
+             "gameid": "730", "game_name": "CS2"},
+            {"date": "2026-08-20", "duration_min": 0.2, "start_time": start + 60,
+             "gameid": "730", "game_name": "CS2"},
+        ]
+
+        result = build_heatmap_data(self.plugin, 3, datetime(2026, 8, 21, 12))
+
+        self.assertEqual(result["heatmap_data"]["2026-08-20"], 0.3)
+        values = list(result["heatmap_data"].values())
+        for day_players in result["daily_contributors"].values():
+            for player in day_players:
+                values.append(player["total_minutes"])
+                values.extend(game["minutes"] for game in player["games"])
+        values.extend(player["total_minutes"] for player in result["players"])
+
+        for value in values:
+            self.assertEqual(round(value, 2), value)
+
+    def test_round_minutes_handles_invalid_input(self):
+        self.assertEqual(round_minutes(None), 0.0)
+        self.assertEqual(round_minutes("bad"), 0.0)
+        self.assertEqual(round_minutes(float("nan")), 0.0)
+        self.assertEqual(round_minutes(float("inf")), 0.0)
+        self.assertEqual(round_minutes(-float("inf")), 0.0)
+        self.assertEqual(round_minutes(10.236), 10.24)
+        self.assertEqual(round_minutes(-1.234), -1.23)
+
+    def test_dashboard_rounds_fractional_play_records(self):
+        self.plugin.play_records["2026-08-21"]["sid-1"]["730"]["minutes"] = 10.236
+
+        dashboard = build_dashboard_stats(
+            self.plugin, "2026-08-21", "2026-08-21 12:00"
+        )
+
+        self.assertEqual(dashboard["top_players_today"][0]["minutes"], 10.24)
+        self.assertEqual(dashboard["top_games_today"][0]["minutes"], 10.24)
 
     def test_report_window_uses_four_am_boundary(self):
         before_boundary = build_report_window(datetime(2026, 8, 29, 3, 30), 1, 0)

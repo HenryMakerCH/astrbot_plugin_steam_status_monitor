@@ -259,7 +259,7 @@ def test_bind_player_writes_qq_and_remark_records():
     assert plugin._bind_data[f"__remark:{other}"] == {"sid": other, "nickname": "路人"}
 
 
-def test_remove_player_from_primary_removes_all_routes_and_runtime_state():
+def test_remove_player_from_primary_promotes_and_migrates_runtime_state():
     sid = "76561198000000001"
     plugin = PluginStub({"111": [sid], "222": []}, {sid: ["222", "333"]})
     plugin.monitor_state.group_last_states = {"111": {sid: {"gameid": "1"}}}
@@ -269,11 +269,13 @@ def test_remove_player_from_primary_removes_all_routes_and_runtime_state():
     result = service.remove_player("111", sid)
 
     assert result.changed is True
-    assert result.message == "removed primary monitor and all push routes"
-    assert plugin.group_steam_ids == {}
-    assert plugin.push_groups == {}
-    assert plugin.monitor_state.group_last_states == {}
-    assert plugin.monitor_state.next_poll_time == {}
+    # 晋升机制上线后语义更新：存在分发路由群时晋升第一个为新主群
+    assert "promoted 222 as new primary" in result.message
+    assert plugin.group_steam_ids == {"222": [sid]}
+    assert plugin.push_groups == {sid: ["333"]}
+    # 运行态数据随晋升迁移到新主群，原主群残留被清理
+    assert plugin.monitor_state.group_last_states == {"222": {sid: {"gameid": "1"}}}
+    assert plugin.monitor_state.next_poll_time == {"222": {sid: 20.0}}
     assert plugin.persistent_saves == 1
 
 

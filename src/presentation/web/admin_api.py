@@ -20,11 +20,14 @@ from ...shared.network import configure_tls, httpx_client_kwargs
 from ...shared.logging import logger
 from ...shared.utils.notify_session import is_valid_group_id
 from .statistics import (
+    MAX_PROFILE_DAYS,
+    build_active_profile,
     build_dashboard_stats,
     build_groups,
     build_heatmap_data,
     build_player_search_index,
     build_report_window,
+    round_minutes,
 )
 from astrbot.core.star.command_management import (
     list_commands,
@@ -172,6 +175,7 @@ class WebAdminAPI:
         r("GET", "/gantt/data", self._api_gantt_data)
         r("GET", "/heatmap/data", self._api_heatmap_data)
         r("GET", "/heatmap/player/<steamid>", self._api_heatmap_player)
+        r("GET", "/heatmap/activity", self._api_heatmap_activity)
         r("GET", "/groups", self._api_groups_list)
         r("GET", "/groups/names", self._api_groups_names)
         r("POST", "/groups/add", self._api_groups_add)
@@ -314,7 +318,10 @@ class WebAdminAPI:
                     else:
                         player_agg[sid]["games"].append({"gameid": gid_data["gid"], "name": gid_data["name"], "minutes": gid_data["mins"]})
 
-        rank_data = sorted(player_agg.values(), key=lambda x: -x["total_minutes"])[:25]
+        rank_data = sorted(
+            (item for item in player_agg.values() if item["total_minutes"] > 0),
+            key=lambda x: -x["total_minutes"],
+        )[:25]
         if not rank_data:
             return json_response({"error": "no data"}, status_code=404)
 
@@ -326,8 +333,9 @@ class WebAdminAPI:
                     avatar_map[sid] = state.get("avatarfull") or state.get("avatar")
 
         for pl in rank_data:
-            top = sorted(pl.get("games", []), key=lambda g: -g["minutes"])
-            pl["top_game_id"] = top[0]["gameid"] if top else ""
+            pl["games"].sort(key=lambda game: -game.get("minutes", 0))
+            top = pl["games"][0] if pl["games"] else None
+            pl["top_game_id"] = top["gameid"] if top else ""
             pl["avatar_url"] = avatar_map.get(pl["sid"])
 
         # Cover fetcher — 复用插件实例的 get_game_cover_url（水平封面 from Steam Store）
@@ -404,7 +412,7 @@ class WebAdminAPI:
                     "game_name": s.get("game_name", "Unknown"),
                     "start": s_start,
                     "end": s_end,
-                    "duration_min": s.get("duration_min", 0),
+                    "duration_min": round_minutes(s.get("duration_min", 0)),
                 })
             if sid_sessions:
                 player_map[sid] = {"sid": sid, "name": _get_player_display_name(p, sid), "sessions": sid_sessions}
@@ -435,7 +443,7 @@ class WebAdminAPI:
                         "game_name": gname,
                         "start": offset_ts,
                         "end": min(offset_ts + span, day_start_ts + 24 * 3600),
-                        "duration_min": mins,
+                        "duration_min": round_minutes(mins),
                     })
                     offset_ts += span
 
@@ -458,6 +466,8 @@ class WebAdminAPI:
         for gid, info in game_details.items():
             info["players"].sort(key=lambda x: -x["minutes"])
             info["players"] = info["players"][:5]
+            for player in info["players"]:
+                player["minutes"] = round_minutes(player["minutes"])
 
         # 从游戏封面提取主色调（饼图着色用）
         game_colors = {}
@@ -496,12 +506,39 @@ class WebAdminAPI:
         group_id = str(request.query.get("group_id", "")).strip()
         groups = getattr(self.plugin, "group_steam_ids", {}) or {}
         if group_id and group_id not in groups:
-            return error_response("群组不存在", status=404)
+            return error_response("群组不存在", status_code=404)
         now = datetime.now()
         return await self._cached_response(
             ("heatmap", period, group_id or "all", now.strftime("%Y-%m-%d-%H")),
             30,
             lambda: build_heatmap_data(
+                self.plugin, period, now, group_id or None
+            ),
+        )
+
+    async def _api_heatmap_activity(self, request):
+        """用户平均活跃热度：按 10 分钟时段统计平均同时游戏人数与峰值。"""
+        try:
+            period = int(request.query.get("period", "30"))
+        except (ValueError, TypeError):
+            period = 30
+        period = max(1, min(period, 366))
+        effective_days = min(period, MAX_PROFILE_DAYS)
+        group_id = str(request.query.get("group_id", "")).strip()
+        groups = getattr(self.plugin, "group_steam_ids", {}) or {}
+        if group_id and group_id not in groups:
+            return error_response("群组不存在", status_code=404)
+        now = datetime.now()
+        return await self._cached_response(
+            (
+                "heatmap",
+                "activity",
+                effective_days,
+                group_id or "all",
+                now.strftime("%Y-%m-%d-%H"),
+            ),
+            60,
+            lambda: build_active_profile(
                 self.plugin, period, now, group_id or None
             ),
         )
@@ -587,6 +624,25 @@ class WebAdminAPI:
             [{"gameid": v["gameid"], "name": v["name"], "minutes": v["minutes"]} for v in game_totals.values()],
             key=lambda x: -x["minutes"],
         )[:10]
+        top_games = [
+            {
+                "gameid": item["gameid"],
+                "name": item["name"],
+                "minutes": round_minutes(item["minutes"]),
+            }
+            for item in top_games
+        ]
+        heatmap_daily = {
+            day_key: round_minutes(value) for day_key, value in heatmap_daily.items()
+        }
+        heatmap_hourly = {
+            day_key: {
+                hour_key: round_minutes(value)
+                for hour_key, value in hours.items()
+            }
+            for day_key, hours in heatmap_hourly.items()
+        }
+        total_minutes = round_minutes(total_minutes)
 
         return json_response({
             "sid": steamid,
@@ -1179,10 +1235,10 @@ class WebAdminAPI:
         today_games = []
         today_data = play_records.get(today, {}).get(steamid, {})
         for gid, ginfo in today_data.items():
-            today_games.append({
-                "name": ginfo.get("name", str(gid)) if isinstance(ginfo, dict) else str(gid),
-                "minutes": ginfo.get("minutes", 0) if isinstance(ginfo, dict) else 0,
-            })
+                    today_games.append({
+                        "name": ginfo.get("name", str(gid)) if isinstance(ginfo, dict) else str(gid),
+                        "minutes": round_minutes(ginfo.get("minutes", 0)) if isinstance(ginfo, dict) else 0,
+                    })
 
         # Steam 个人资料链接 (通过 SteamID)
         sid_num = int(steamid) if steamid.isdigit() else None
@@ -1193,7 +1249,7 @@ class WebAdminAPI:
             "name": name,
             "current_game": current_game,
             "personastate": personastate,
-            "total_minutes": total_minutes,
+            "total_minutes": round_minutes(total_minutes),
             "total_sessions": total_sessions,
             "today_games": today_games,
             "profile_url": profile_url,
