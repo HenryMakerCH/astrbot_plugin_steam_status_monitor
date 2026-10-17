@@ -194,7 +194,7 @@ class NotificationTrackingMixin:
                 elif notification["type"] == "offline":
                     minutes = notification.get("online_minutes")
                     suffix = f"（本次在线 {format_play_duration(minutes)}）" if minutes is not None else ""
-                    line = f"🌑 【{notification['name']}】 已离线{suffix}"
+                    line = f"🌑【{notification['name']}】 已离线{suffix}"
                 else:
                     line = f"👋 {notification['name']} 不玩 {notification['game']}，游玩时间 {notification['duration_str']}\n"
                 if self.config.get("notify_send_text", True):
