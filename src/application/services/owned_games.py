@@ -128,6 +128,11 @@ class OwnedGamesService:
 
     async def run_loop(self):
         """独立后台循环：60s 后首轮同步（新玩家静默建基线；已有基线者补播停机期间新增），随后按周期同步（默认 1800s）。"""
+        logger.info(
+            f"[游戏库] 新入库播报服务启动：间隔 {self._interval()}s，"
+            f"播报开关 {'开启' if self._enabled() else '关闭'}，"
+            f"已加载 {len(self.store.players)} 位玩家快照，60 秒后执行首轮同步"
+        )
         await asyncio.sleep(60)
         try:
             await self.sync_all()
@@ -141,6 +146,10 @@ class OwnedGamesService:
                     await asyncio.sleep(min(300.0, max(5.0, self._backoff_until - time.time())))
                     continue
                 if not self._budget_available():
+                    logger.warning(
+                        f"[游戏库] 今日 API 调用预算已用尽（{self._day_calls}/{self._daily_budget()}），"
+                        f"暂停采集，待 {DAY_ROLLOVER_HOUR}:00 统计日切换后自动恢复"
+                    )
                     await asyncio.sleep(self._seconds_to_next_day())
                     continue
                 await self.retry_pending()
@@ -194,6 +203,7 @@ class OwnedGamesService:
         sids = [sid for sid in routing if self._sid_ready(sid)]
         summary = {"players": len(sids), "added": 0, "baselines": 0, "failed": 0}
         if not sids:
+            logger.info("[游戏库] 本轮同步：当前没有处于监控中的玩家，跳过")
             return summary
 
         async def one(sid):
@@ -210,11 +220,13 @@ class OwnedGamesService:
             summary["added"] += int(result.get("added", 0))
             summary["baselines"] += int(bool(result.get("baseline")))
             summary["failed"] += int(bool(result.get("failed")))
-        if summary["added"] or summary["failed"]:
+        if summary["added"] or summary["failed"] or summary["baselines"]:
             logger.info(
                 f"[游戏库] 本轮同步：玩家 {summary['players']}，新入库 {summary['added']}，"
                 f"新建基线 {summary['baselines']}，失败 {summary['failed']}"
             )
+        else:
+            logger.info(f"[游戏库] 本轮同步完成：{summary['players']} 位玩家，无新增播报")
         return summary
 
     async def sync_player(self, sid, groups, baseline_only=False):
@@ -277,6 +289,8 @@ class OwnedGamesService:
         self._dirty = True
         if effective:
             self._record_recent(state, effective, now)
+        if removed_ids:
+            logger.info(f"[游戏库] {sid} 检出 {len(removed_ids)} 款移出游戏库（退款/移除等，不播报）")
         if baseline_only or not effective:
             return {"baseline": False, "added": 0, "failed": False}
         announced = await self._announce(sid, groups, effective, state)
@@ -316,6 +330,7 @@ class OwnedGamesService:
     async def _announce(self, sid, groups, appids, state):
         """把新增项转为播报任务：懒加载名称与商店数据，立即投递，失败进持久化补发队列。"""
         if not self._enabled():
+            logger.info(f"[游戏库] {sid} 检出 {len(appids)} 款新增，但播报开关已关闭，仅更新本地快照")
             return 0
         max_cards = self._max_per_notify()
         now = int(time.time())
@@ -331,6 +346,7 @@ class OwnedGamesService:
                     logger.warning(f"[游戏库] 获取游戏名失败（appid={appid}）: {exc}")
                     name = None
             name = str(name or f"AppID {appid}")
+            logger.info(f"[游戏库] {sid} 检出新增：{name}（appid={appid}）")
             items.append({
                 "appid": str(appid),
                 "name": name,
@@ -398,6 +414,12 @@ class OwnedGamesService:
                 "card_data": item.get("card_data"),
             }
             failed = await self._send_to_group(group_id, noti)
+            if failed:
+                logger.warning(
+                    f"[游戏库] 播报发送失败：{item.get('name')} → 群 {group_id}，已进入补发队列"
+                )
+            else:
+                logger.info(f"[游戏库] 播报已送达：{item.get('name')} → 群 {group_id}")
             for failed_noti in failed:
                 item.setdefault("deliveries", []).append({
                     "group_id": str(group_id),
@@ -450,6 +472,8 @@ class OwnedGamesService:
                     remaining.append(item)
                 state["pending"] = remaining
                 self._dirty = True
+        if delivered:
+            logger.info(f"[游戏库] 已补发 {delivered} 条未送达的新入库播报")
         return delivered
 
     async def _retry_item(self, sid, state, item):
@@ -493,6 +517,10 @@ class OwnedGamesService:
             result["added"] += int(outcome.get("added", 0))
         self.store.flush()
         self._dirty = False
+        logger.info(
+            f"[游戏库] 手动同步（群 {gid}）：玩家 {result['players']}，新入库 {result['added']}，"
+            f"新建基线 {result['baselines']}，失败 {result['failed']}"
+        )
         return result
 
     async def list_for_sender(self, sender_id, query="", offset=0, limit=20):
@@ -556,6 +584,10 @@ class OwnedGamesService:
         cooldown = min(21600, 300 * (2 ** min(state["fail_count"] - 1, 6)))
         self._fail_until[sid] = time.time() + cooldown
         self._dirty = True
+        if state["fail_count"] >= 2:
+            logger.warning(
+                f"[游戏库] {sid} 连续失败 {state['fail_count']} 次，该玩家暂停同步 {max(1, int(cooldown) // 60)} 分钟"
+            )
 
     def _sid_ready(self, sid) -> bool:
         return time.time() >= self._fail_until.get(str(sid), 0.0)
