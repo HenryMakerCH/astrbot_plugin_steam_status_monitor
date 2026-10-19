@@ -528,7 +528,7 @@ def render_game_start_image(player_name, avatar_path, game_name, cover_path, pla
     game_id_text = str(game_id or "").strip()
     appid_top = None
     if game_id_text.isdigit() and game_id_text.lstrip("0"):
-        font_appid = load_truetype("NotoSansHans-Regular.otf", 9)
+        font_appid = load_truetype("NotoSansHans-Medium.otf", 9)
         appid_text = f"GameId:{game_id_text}"
         appid_bbox = draw.textbbox((0, 0), appid_text, font=font_appid)
         appid_w = appid_bbox[2] - appid_bbox[0]
@@ -537,16 +537,16 @@ def render_game_start_image(player_name, avatar_path, game_name, cover_path, pla
         appid_top = appid_y + appid_bbox[1]
         draw.text(
             (img_w - appid_w - 6, appid_y),
-            appid_text, font=font_appid, fill=(168, 180, 190),
+            appid_text, font=font_appid, fill=(115, 150, 105),
         )
 
     # 在线人数渲染（放在最后，确保不会被玩家名遮挡）
     if online_text:
         draw.text((img_w - online_text_w, 10), online_text, font=font_online, fill=(120,180,255,180))
 
-    # 右下角版本号水印（7px 浅灰蓝；有 GameId 时堆叠在它上方 4px）
+    # 右下角版本号水印（7px 低饱和绿；有 GameId 时堆叠在它上方 4px）
     if version:
-        font_version = load_truetype("NotoSansHans-Regular.otf", 7)
+        font_version = load_truetype("NotoSansHans-Medium.otf", 7)
         v_text = f"v{version}"
         v_bbox = draw.textbbox((0, 0), v_text, font=font_version)
         v_w = v_bbox[2] - v_bbox[0]
@@ -557,7 +557,7 @@ def render_game_start_image(player_name, avatar_path, game_name, cover_path, pla
             v_y = img_h - v_h - 4
         draw.text(
             (img_w - v_w - 6, v_y),
-            v_text, font=font_version, fill=(170, 185, 195),
+            v_text, font=font_version, fill=(115, 150, 105),
         )
 
     return img.convert("RGB")
