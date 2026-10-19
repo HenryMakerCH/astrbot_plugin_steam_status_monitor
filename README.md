@@ -68,8 +68,10 @@
 | `enable_achievement_poll` | 成就轮询推送开关 | true |
 | `enable_steam_style` | Steam列表渲染风格开关（开启=steam风格；关闭=原卡片风格） | true |
 | `enable_game_end_notify` | 游戏结束通知开关 | true |
-| `enable_user_online_notify` | 用户上线通知开关（纯文本；同一轮开始游玩时不再重复推送） | true |
-| `enable_user_offline_notify` | 用户下线通知开关（纯文本，附本次在线时长） | true |
+| `enable_game_start_notify` | 游戏开始通知开关（关闭后仅记录时长） | true |
+| `enable_network_fluctuation_notify` | 网络波动通知开关（纯文本） | true |
+| `enable_user_online_notify` | 用户上线通知开关（纯文本；默认关闭；检测延迟约 3–30 分钟） | false |
+| `enable_user_offline_notify` | 用户下线通知开关（纯文本，附本次在线时长；默认关闭；180 秒防抖） | false |
 | `notify_send_image` | 通知发送图片开关 | true |
 | `notify_send_text` | 通知发送文本开关 | true |
 | `enable_proxy` | 启用网络代理 | false |
@@ -85,6 +87,8 @@
 | `owned_games_ignore_appids` | 忽略的 AppID（逗号分隔，入库不播报） | 空 |
 | `owned_games_grace_days` | 抖动抑制窗口（天，免费周末等临时入库） | 7 |
 
+> 上线/下线推送默认关闭（opt-in）。离线通知需连续 180 秒确认，窗口内重新上线不推送；上线检测受轮询间隔影响，通常有 3–30 分钟延迟。同一玩家多群监控时，待定按 SteamID 全局合并，不会重复计时或重复推送。
+>
 > 带「修改后重启AstrBot生效」标注的配置项需重启后生效。
 
 ## 注意事项
@@ -223,8 +227,13 @@ pip install httpx pillow
 > 如果本项目对您的生活 / 工作产生了帮助，或者您关注本项目的未来发展，请给项目 Star，这是我维护这个开源项目的动力 ❤️。
 
 ## 更新记录
-- V4.10.2（2026/10/17）
-  - **用户上下线推送（新功能，默认开启）**：监控玩家上线/离线时推送「已上线 / 已离线」纯文本通知（`enable_user_online_notify` / `enable_user_offline_notify`，修改后立即生效）。基于轮询快照的 `personastate` 差分实现，与游戏会话状态机解耦；上线推送与同一轮"开始游玩"互斥，避免同一事件打扰两次。
+- V4.11.1（2026/10/19）
+  - **用户上下线推送（新功能，默认关闭 / opt-in）**：监控玩家上线/离线时推送「已上线 / 已离线」纯文本通知（`enable_user_online_notify` / `enable_user_offline_notify`，修改后立即生效）。基于轮询快照的 `personastate` 差分实现，与游戏会话状态机解耦；上线推送与同一轮“开始游玩”互斥，避免同一事件打扰两次。
+  - **180 秒离线防抖**：检测到离线后先进入 180 秒确认窗，窗口内重新上线不推送；待定状态跨重启保留，重启后由首轮快照确认仍离线才结算。窗口内该玩家的复查轮询自动钳到 60 秒。
+  - **多群合并**：同一玩家被多个群监控时，离线待定按 SteamID 全局合并，保留最早检测时间、截止时间与在线时长；后检测的群只刷新观测时间，不覆盖先到群的结果。
+  - **检测延迟**：上线/下线依赖轮询快照，通常有 3–30 分钟延迟；离线结算额外叠加 180 秒确认窗。
+  - **修复**：多条上线/下线文本合并时缺少换行；启动基线 `skip_push` 误删其他群待定；结算早于本轮快照导致窗口末尾「离线+上线」双推；关闭文本、仅开图片时纯文本 presence 通知无限重试；未 `/steam on` 的群收到离线通知；结算后最多 300 秒才落盘。
+  - **清理**：删除玩家、删除群、清空全部 ID、`/steam rs` 时同步清理 presence 运行时状态；联动推送（`push_groups`）共用 `online_since` 作为上线事件去重键。
   - **已知边界**：Steam 隐身（invisible）状态在 API 下表现为离线，无法识别；隐身但正在游戏时不会误报下线。
 
 - V4.10.1（2026/10/17）
