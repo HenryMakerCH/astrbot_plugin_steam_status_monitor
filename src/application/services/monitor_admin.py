@@ -336,6 +336,10 @@ class MonitorAdminService:
             pending[group_id] = [item for item in pending[group_id] if str(item.get("sid", item.get("steamid", ""))) != steam_id]
             if not pending[group_id]:
                 pending.pop(group_id, None)
+        sid_key = str(steam_id)
+        getattr(self._plugin, "_presence_online_since", {}).pop(sid_key, None)
+        getattr(self._plugin, "_presence_pending_offline", {}).pop(sid_key, None)
+        getattr(self._plugin, "_presence_settled_offline_at", {}).pop(sid_key, None)
         for attr in ("achievement_poll_tasks", "achievement_snapshots", "achievement_fail_count"):
             cache = getattr(self._plugin, attr, {})
             for key in list(cache):
@@ -434,6 +438,9 @@ class MonitorAdminService:
             for sid, targets in (getattr(plugin, "push_groups", {}) or {}).items()
             if str(group_id) in {str(target) for target in targets}
         ]
+        removed_sids = {str(sid) for sid in (self.groups.get(group_id, []) or [])} | {
+            str(sid) for sid in routed_sids
+        }
         if not has_primary and not routed_sids:
             return GroupMutationResult(False, f"群聊 {group_id} 未绑定任何SteamID，无需清理。")
 
@@ -466,6 +473,13 @@ class MonitorAdminService:
         snapshots = getattr(plugin, "achievement_snapshots", {})
         for key in [item for item in list(snapshots.keys()) if item[0] == group_id]:
             snapshots.pop(key, None)
+        remaining_sids = {
+            str(sid) for ids in self.groups.values() for sid in ids
+        }
+        for sid in removed_sids - remaining_sids:
+            getattr(plugin, "_presence_online_since", {}).pop(sid, None)
+            getattr(plugin, "_presence_pending_offline", {}).pop(sid, None)
+            getattr(plugin, "_presence_settled_offline_at", {}).pop(sid, None)
         plugin._save_group_steam_ids()
         plugin._save_push_groups()
         plugin._save_notify_session()
@@ -498,6 +512,9 @@ class MonitorAdminService:
         getattr(plugin, "_session_meta", {}).clear()
         plugin.group_recent_games.clear()
         plugin._pending_end_notifications.clear()
+        getattr(plugin, "_presence_online_since", {}).clear()
+        getattr(plugin, "_presence_pending_offline", {}).clear()
+        getattr(plugin, "_presence_settled_offline_at", {}).clear()
         getattr(plugin, "notify_sessions", {}).clear()
         plugin._save_group_steam_ids()
         plugin._save_push_groups()

@@ -14,6 +14,13 @@ PRESENCE_OFFLINE_DEBOUNCE_SECONDS = 180
 # 防抖窗口内该玩家的复查轮询间隔（秒）：离线玩家的自然轮询档位是 3-30 分钟，
 # 赶不上窗口节奏，须钳制 next_poll_time 强制复查。
 PRESENCE_RECHECK_INTERVAL_SECONDS = 60
+# 结算要求“最后一次离线观测”足够新鲜：容忍一次 60 秒复查延迟，
+# 同时阻止重启/请求失败时用旧快照误结算。
+PRESENCE_SETTLE_FRESHNESS_SECONDS = 75
+# 超过该时长仍没有新鲜离线观测：静默丢弃待定，避免僵尸项长期占用。
+PRESENCE_PENDING_MAX_STALE_SECONDS = 900
+# 已结算离线事件的多群基线滞后抑制窗口（覆盖最大 30 分钟轮询档位）。
+PRESENCE_OFFLINE_SUPPRESS_SECONDS = 3600
 
 
 @dataclass(frozen=True)
@@ -25,14 +32,18 @@ class PresenceEvent:
 
 def is_online(snapshot: Mapping[str, Any]) -> bool:
     """快照当前是否在线：gameid 非空（含隐身挂机）或 personastate > 0。"""
-    if snapshot.get("gameid") not in (None, "", "0"):
+    gameid = snapshot.get("gameid")
+    if gameid not in (None, "", 0, "0"):
         return True
-    return int(snapshot.get("personastate") or 0) > 0
+    try:
+        return int(snapshot.get("personastate") or 0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _has_presence(snapshot: Mapping[str, Any]) -> bool:
     """旧版本持久化基线可能缺 personastate 字段，缺字段视为状态未知。"""
-    return "personastate" in snapshot or snapshot.get("gameid") not in (None, "", "0")
+    return "personastate" in snapshot or snapshot.get("gameid") not in (None, "", 0, "0")
 
 
 def presence_transition(previous: Optional[Mapping[str, Any]], current: Mapping[str, Any]) -> Optional[PresenceEvent]:

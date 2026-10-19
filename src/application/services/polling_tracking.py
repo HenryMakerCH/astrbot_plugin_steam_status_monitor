@@ -97,8 +97,6 @@ class PollingTrackingMixin:
                 # 离线玩家可能数十分钟才再入轮询，deadline 必须每分钟单独检查。
                 # 必须在 Steam 请求之前结算并立刻 flush，否则超时会把结束卡拖到下一局开始才发出。
                 await self.session_service.tick_due(int(now2))
-                # 下线防抖待定到期结算（180 秒确认窗），结果随本轮 flush 发出
-                self._settle_pending_offline_presence(int(now2))
                 await self._flush_pending_end_notifications()
                 if not group_sids:
                     await asyncio.sleep(40)  # 本轮无到点，跳过
@@ -127,7 +125,10 @@ class PollingTrackingMixin:
                         self._last_round_logs.append((gid, "\n".join(round_msg_lines)))
                 poll_tasks = [query_one_group(gid, sids) for gid, sids in group_sids.items()]
                 await asyncio.gather(*poll_tasks, return_exceptions=True)
-                # 统一 flush 本轮收集的所有通知（开始游戏 + 延迟退出的结束游戏），合并发送
+                # 本轮快照已刷新 last_seen_offline_at，再结算下线待定：
+                # 避免用上一轮旧快照在窗口末尾误报离线，也避免重启后首轮快照前误结算。
+                self._settle_pending_offline_presence(int(time.time()))
+                # 统一 flush 本轮收集的所有通知（开始游戏 + 延迟退出的结束游戏 + 上下线），合并发送
                 await self._flush_pending_end_notifications()
                 # 40秒统一输出日志
                 await asyncio.sleep(40)

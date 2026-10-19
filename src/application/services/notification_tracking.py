@@ -190,11 +190,11 @@ class NotificationTrackingMixin:
                         f"（当前共 {notification.get('owned_count') or 0} 款）\n"
                     )
                 elif notification["type"] == "online":
-                    line = f"🔵【{notification['name']}】已上线"
+                    line = f"🔵【{notification['name']}】已上线\n"
                 elif notification["type"] == "offline":
                     minutes = notification.get("online_minutes")
                     suffix = f"（本次在线 {format_play_duration(minutes)}）" if minutes is not None else ""
-                    line = f"🌑【{notification['name']}】 已离线{suffix}"
+                    line = f"🌑【{notification['name']}】已离线{suffix}\n"
                 else:
                     line = f"👋 {notification['name']} 不玩 {notification['game']}，游玩时间 {notification['duration_str']}\n"
                 if self.config.get("notify_send_text", True):
@@ -203,13 +203,22 @@ class NotificationTrackingMixin:
                 if img_path:
                     msg_chain.append(Image.fromFileSystem(img_path))
             if not msg_chain:
-                if self.config.get("notify_send_image", True) and not self.config.get("notify_send_text", True):
-                    for notification in matched_notifications:
-                        self._finish_notification(notification, session, success=False)
-                    return matched_notifications
+                retry = []
+                image_only = (
+                    self.config.get("notify_send_image", True)
+                    and not self.config.get("notify_send_text", True)
+                )
                 for notification in matched_notifications:
-                    self._finish_notification(notification, session, success=False)
-                return []
+                    if notification["type"] in ("online", "offline"):
+                        # 纯文本类型：文本关闭时没有可发送内容，按已处理丢弃，避免无限重试
+                        self._finish_notification(notification, session, success=True)
+                    elif image_only:
+                        # 其他类型在“仅图片”模式下渲染失败，保留原有失败重试语义
+                        self._finish_notification(notification, session, success=False)
+                        retry.append(notification)
+                    else:
+                        self._finish_notification(notification, session, success=False)
+                return retry
             try:
                 await self.context.send_message(session, MessageChain(msg_chain))
             except Exception:

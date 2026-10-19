@@ -100,9 +100,19 @@ class PersistenceMixin:
             except Exception as e:
                 logger.warning(f"保存首次迁移的 playing_sessions 失败: {e}")
         # 在线起始时间（presence）：离线推送"本次在线"时长的数据源，跨重启保持计时
-        self._presence_online_since = self._load_plain_json("presence_online_since.json")
+        online_since = self._load_plain_json("presence_online_since.json")
+        self._presence_online_since = (
+            {str(key): value for key, value in online_since.items() if isinstance(value, (int, float))}
+            if isinstance(online_since, dict)
+            else {}
+        )
         # 下线防抖待定（presence）：180 秒确认窗内重启不丢，重启后由主循环继续结算
-        self._presence_pending_offline = self._load_plain_json("presence_pending_offline.json")
+        pending = self._load_plain_json("presence_pending_offline.json")
+        self._presence_pending_offline = (
+            {str(key): value for key, value in pending.items() if isinstance(value, dict)}
+            if isinstance(pending, dict)
+            else {}
+        )
 
     def _load_plain_json(self, filename, default=None):
         """加载 data 目录下的全局 JSON 文件；缺失/损坏返回 default。"""
@@ -122,6 +132,17 @@ class PersistenceMixin:
                 json.dump(data, f, ensure_ascii=False)
         except Exception as e:
             logger.warning(f"保存 {filename} 失败: {e}")
+
+    def _save_presence_state(self):
+        """立即写入 presence 两个小文件；不经过 300 秒节流。"""
+        self._save_plain_json(
+            "presence_online_since.json",
+            getattr(self, "_presence_online_since", {}),
+        )
+        self._save_plain_json(
+            "presence_pending_offline.json",
+            getattr(self, "_presence_pending_offline", {}),
+        )
 
     def _save_persistent_data(self, force=False):
         '''分群保存各群的状态数据。
@@ -165,8 +186,7 @@ class PersistenceMixin:
         except Exception as e:
             logger.warning(f"保存 playing_sessions 失败: {e}")
         # 保存在线起始时间与下线防抖待定（全局，按 sid；presence 推送的数据源）
-        self._save_plain_json("presence_online_since.json", self._presence_online_since)
-        self._save_plain_json("presence_pending_offline.json", self._presence_pending_offline)
+        self._save_presence_state()
         # 保存游玩时长记录（全局，不分群）
         try:
             self._save_play_records()
