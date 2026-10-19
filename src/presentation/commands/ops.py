@@ -47,7 +47,7 @@ HELP_TEXT = (
     "/steam mygames [关键词] - 查询本人绑定的游戏库（数量/最近入库/关键词检索）\n"
     "/steam achievement_on - 开启本群成就推送\n"
     "/steam achievement_off - 关闭本群成就推送\n"
-    "/steam achievement_blacklist [list 页码] - 查看成就查询黑名单（AppID/游戏名/时间/原因）\n"
+    "/steam achievement_blacklist [list [text]] - 查看成就查询黑名单（表格图片，加 text 输出纯文本）\n"
     "/steam achievement_blacklist del [AppID|all] - 删除黑名单条目 / 清空全部\n"
     "/steam rank - 查看本群今日游戏时长排行榜\n"
     "/steam rank 天数 - 查看本群指定天数排行榜（如 7, 30）\n"

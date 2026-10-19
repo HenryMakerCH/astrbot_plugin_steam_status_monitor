@@ -1,8 +1,12 @@
 """`/steam achievement_blacklist` 成就查询黑名单管理。"""
 import re
+import tempfile
 from datetime import datetime
 
 from ...domain.monitoring.game_filter import parse_appids
+from ...presentation.renderers.achievement_blacklist import render_achievement_blacklist_image
+from ...shared.fonts import resolve_font_path
+from ...shared.logging import logger
 
 PAGE_SIZE = 20
 
@@ -20,7 +24,7 @@ _REASON_LABELS = {
 }
 
 _USAGE = (
-    "用法：/steam achievement_blacklist [list [页码]] ｜ "
+    "用法：/steam achievement_blacklist [list [text]] ｜ "
     "/steam achievement_blacklist del 730,570 ｜ "
     "/steam achievement_blacklist del all"
 )
@@ -109,15 +113,42 @@ async def achievement_blacklist(plugin, event, action: str = "", value: str = ""
     tokens = [token for token in re.split(r"[,，\s]+", raw) if token]
     verb = tokens[0].lower() if tokens else ""
 
-    # 列表：空 / list / ls / show
+    # 列表：空 / list / ls / show（默认出图，加 text 走纯文本）
     if not tokens or verb in ("list", "ls", "show"):
+        rest = tokens[1:]
+        text_mode = any(token.lower() == "text" for token in rest)
         page = 1
-        if len(tokens) > 1:
-            if not tokens[1].isdigit():
+        for token in rest:
+            if token.lower() == "text":
+                continue
+            if not token.isdigit():
                 yield event.plain_result("页码应为正整数。\n" + _USAGE)
                 return
-            page = int(tokens[1])
-        yield event.plain_result(_render_list(monitor, page))
+            page = int(token)
+
+        if text_mode:
+            yield event.plain_result(_render_list(monitor, page))
+            return
+
+        entries = monitor.list_entries()
+        if not entries:
+            yield event.plain_result("成就黑名单为空。\n" + _HINT)
+            return
+        try:
+            img_bytes = render_achievement_blacklist_image(
+                entries,
+                title_suffix="",
+                font_path=resolve_font_path("NotoSansHans-Regular.otf"),
+            )
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                tmp.write(img_bytes)
+                tmp_path = tmp.name
+            yield event.image_result(tmp_path)
+        except Exception as exc:
+            logger.error(f"[成就黑名单] 图片渲染失败: {exc}")
+            yield event.plain_result(
+                "图片渲染失败，已退回文本输出：\n" + _render_list(monitor, page)
+            )
         return
 
     # 删除：del / delete / rm / remove

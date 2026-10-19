@@ -206,8 +206,8 @@ AstrBot 只扫描 `Star` 子类上的命令装饰器，注册桩必须留在插�
 - `/steam rs` 清除所有状态并初始化
 - `/steam achievement_on` 开启本群Steam成就推送
 - `/steam achievement_off` 关闭本群Steam成就推送
-- `/steam achievement_blacklist` 查看成就查询黑名单（AppID / 游戏名 / 加入时间 / 原因，每页 20 条；别名 `achievement_bl`、`achbl`、`ABL`、`abl`，均需 `/steam` 前缀）
-- `/steam achievement_blacklist list [页码]` 分页查看（默认第 1 页）
+- `/steam achievement_blacklist` 查看成就查询黑名单（表格图片，AppID / 游戏名 / 加入时间 / 原因，表格图片一图输出全部条目；别名 `achievement_bl`、`achbl`、`ABL`、`abl`，均需 `/steam` 前缀）
+- `/steam achievement_blacklist list text [页码]` 纯文本分页查看（默认第 1 页，每页 20 条）
 - `/steam achievement_blacklist del [AppID]` 删除单条/多条（逗号或空格分隔）
 - `/steam achievement_blacklist del all` 清空全部（**不二次确认，慎用**）
 - `/steam test_achievement_render [steamid] [gameid] [数量]` 测试成就图片渲染
@@ -237,7 +237,7 @@ pip install httpx pillow
 
 ## 更新记录
 - V4.11.3（2026/10/19）
-  - **新指令 `/steam achievement_blacklist`（管理员）**：查看成就查询黑名单，逐条显示 AppID、游戏名、加入时间与原因；支持分页（每页 20 条）、按 AppID 删除、`del all` 清空。别名 `achievement_bl` / `achbl` / `ABL` / `abl`。
+  - **新指令 `/steam achievement_blacklist`（管理员）**：查看成就查询黑名单，逐条显示 AppID、游戏名、加入时间与原因；默认渲染为深色表格图片，一张图输出全部条目（超过 42 条自动分两栏避免缩放过小），另支持 `list text` 纯文本分页、按 AppID 删除、`del all` 清空。别名 `achievement_bl` / `achbl` / `ABL` / `abl`。
   - **数据升级**：`achievement_blacklist.json` 升级为 v2（含 game_name / added_at / reason / source），首次启动自动迁移并备份 `.bak-v1`；历史条目如实显示「时间未知 / 历史遗留」，并从 `play_records.json`、`session_records.json` 离线回填游戏名。
   - **修复**：消除插件级与 `AchievementMonitor` 两套黑名单集合不同步的问题；「当天失败 10 次」拉黑现在会落盘并在重启后保留。
   - **校验保护**：一次性历史校验跳过 `source=manual` 条目，避免手动拉黑被自动移除。
