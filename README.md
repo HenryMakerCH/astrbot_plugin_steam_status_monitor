@@ -69,7 +69,7 @@
 | `enable_steam_style` | Steam列表渲染风格开关（开启=steam风格；关闭=原卡片风格） | true |
 | `enable_game_end_notify` | 游戏结束通知开关 | true |
 | `enable_user_online_notify` | 用户上线通知开关（纯文本；同一轮开始游玩时不再重复推送） | true |
-| `enable_user_offline_notify` | 用户下线通知开关（纯文本，附本次在线时长；180秒防抖，确认期内心回归上线不推送） | true |
+| `enable_user_offline_notify` | 用户下线通知开关（纯文本，附本次在线时长） | true |
 | `notify_send_image` | 通知发送图片开关 | true |
 | `notify_send_text` | 通知发送文本开关 | true |
 | `enable_proxy` | 启用网络代理 | false |
