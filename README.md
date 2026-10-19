@@ -206,6 +206,10 @@ AstrBot 只扫描 `Star` 子类上的命令装饰器，注册桩必须留在插�
 - `/steam rs` 清除所有状态并初始化
 - `/steam achievement_on` 开启本群Steam成就推送
 - `/steam achievement_off` 关闭本群Steam成就推送
+- `/steam achievement_blacklist` 查看成就查询黑名单（AppID / 游戏名 / 加入时间 / 原因，每页 20 条；别名 `achievement_bl`、`achbl`、`ABL`、`abl`，均需 `/steam` 前缀）
+- `/steam achievement_blacklist list [页码]` 分页查看（默认第 1 页）
+- `/steam achievement_blacklist del [AppID]` 删除单条/多条（逗号或空格分隔）
+- `/steam achievement_blacklist del all` 清空全部（**不二次确认，慎用**）
 - `/steam test_achievement_render [steamid] [gameid] [数量]` 测试成就图片渲染
 - `/steam test_game_start_render [steamid] [gameid]` 测试开始游戏图片渲染
 - `/steam清除缓存` 清除所有头像、封面图等图片缓存
@@ -232,6 +236,12 @@ pip install httpx pillow
 > 如果本项目对您的生活 / 工作产生了帮助，或者您关注本项目的未来发展，请给项目 Star，这是我维护这个开源项目的动力 ❤️。
 
 ## 更新记录
+- V4.11.3（2026/10/19）
+  - **新指令 `/steam achievement_blacklist`（管理员）**：查看成就查询黑名单，逐条显示 AppID、游戏名、加入时间与原因；支持分页（每页 20 条）、按 AppID 删除、`del all` 清空。别名 `achievement_bl` / `achbl` / `ABL` / `abl`。
+  - **数据升级**：`achievement_blacklist.json` 升级为 v2（含 game_name / added_at / reason / source），首次启动自动迁移并备份 `.bak-v1`；历史条目如实显示「时间未知 / 历史遗留」，并从 `play_records.json`、`session_records.json` 离线回填游戏名。
+  - **修复**：消除插件级与 `AchievementMonitor` 两套黑名单集合不同步的问题；「当天失败 10 次」拉黑现在会落盘并在重启后保留。
+  - **校验保护**：一次性历史校验跳过 `source=manual` 条目，避免手动拉黑被自动移除。
+
 - V4.11.2（2026/10/19）
   - **启动游戏卡**：新增 `GameId:<id>` 徽标，位于卡片右下角最底部、与版本号上下堆叠，9px Medium 低饱和绿；右下角版本号水印改为 7px Medium 低饱和绿并上移，修复旧版颜色过暗（深色背景上对比度约 1.1:1）导致的看不清问题。
   - **新指令 `/steam BL`（管理员）**：强制黑名单管理。`/steam BL 730,431960` 加入并自动切换为黑名单模式；`/steam BL list` 查看当前模式与名单；`/steam BL del 730` 删除。支持逗号、全角逗号、空格分隔，自动去重与前导零归一化，修改后立即生效，无需重启。
