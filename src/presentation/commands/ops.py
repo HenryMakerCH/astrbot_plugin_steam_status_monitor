@@ -48,6 +48,7 @@ HELP_TEXT = (
     "/steam achievement_on - 开启本群成就推送\n"
     "/steam achievement_off - 关闭本群成就推送\n"
     "/steam achievement_blacklist [list [text]] - 查看成就查询黑名单（表格图片，加 text 输出纯文本）\n"
+    "/steam achievement_blacklist names - 批量补全黑名单里缺失的游戏名（查询 Steam 商店）\n"
     "/steam achievement_blacklist del [AppID|all] - 删除黑名单条目 / 清空全部\n"
     "/steam rank - 查看本群今日游戏时长排行榜\n"
     "/steam rank 天数 - 查看本群指定天数排行榜（如 7, 30）\n"

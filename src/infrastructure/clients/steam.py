@@ -746,6 +746,56 @@ class SteamClientMixin:
         self._game_name_cache[gid] = (name_zh, name_en)
         return (name_zh, name_en)
 
+    async def get_game_names_batch(self, appids, lang="schinese", concurrency=6):
+        """批量获取游戏名，返回 {appid: name}。
+
+        Steam 的 appdetails 一次只接受一个 appid（传逗号列表会返回 400/null），
+        因此这里用限流并发逐条查询；查不到的条目不会出现在结果里。
+        """
+        wanted = []
+        for raw in appids or []:
+            gid = str(raw or "").strip()
+            if gid and gid.isdigit() and gid not in wanted:
+                wanted.append(gid)
+        if not wanted:
+            return {}
+
+        url = f"{self.STEAM_STORE_BASE}/api/appdetails"
+        names = {}
+        semaphore = asyncio.Semaphore(max(1, int(concurrency)))
+
+        async with httpx.AsyncClient(
+            timeout=12, **httpx_client_kwargs(self.proxy)
+        ) as client:
+
+            async def fetch_one(gid) -> None:
+                async with semaphore:
+                    for query_lang in (lang, "en"):
+                        try:
+                            resp = await client.get(
+                                url,
+                                params={"appids": gid, "l": query_lang},
+                                cookies=STEAM_STORE_COOKIES,
+                                headers=STEAM_STORE_HEADERS,
+                            )
+                            if resp.status_code != 200:
+                                continue
+                            data = resp.json()
+                        except Exception as exc:
+                            logger.warning(f"获取游戏名失败: {exc} (gameid={gid})")
+                            continue
+                        info = data.get(gid) if isinstance(data, dict) else None
+                        if not isinstance(info, dict) or not info.get("success"):
+                            continue
+                        name = str((info.get("data") or {}).get("name") or "").strip()
+                        if name:
+                            names[gid] = name
+                            self._game_name_cache[gid] = name
+                            return
+
+            await asyncio.gather(*(fetch_one(gid) for gid in wanted))
+        return names
+
     async def get_game_cover_url(self, gameid, force_update=False):
         '''
         获取游戏封面图本地路径（优先小图，失败自动尝试日文/英文区域），自动缓存到本地，定期刷新

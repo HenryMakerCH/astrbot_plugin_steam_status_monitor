@@ -240,6 +240,29 @@ class AchievementBlacklistStore:
             return meta["game_name"]
         return str(self._resolver.get(key) or "")
 
+    def missing_name_appids(self):
+        """返回当前没有游戏名的 AppID 列表（按加入时间倒序）。"""
+        return [appid for appid, meta in self.items() if not meta.get("game_name")]
+
+    def update_names(self, mapping) -> int:
+        """批量写入游戏名，只填充空缺（已有名称不覆盖）。返回实际写入条数。"""
+        if not mapping or not hasattr(mapping, "items"):
+            return 0
+        filled = 0
+        for raw_appid, raw_name in mapping.items():
+            key = normalize_appid(raw_appid)
+            name = str(raw_name or "").strip()
+            if not key or not name:
+                continue
+            meta = self.entries.get(key)
+            if meta is None or meta.get("game_name"):
+                continue
+            meta["game_name"] = name
+            filled += 1
+        if filled:
+            self.save()
+        return filled
+
     # ---------- 原子写 ----------
 
     def save(self) -> bool:

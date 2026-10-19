@@ -25,10 +25,11 @@ _REASON_LABELS = {
 
 _USAGE = (
     "用法：/steam achievement_blacklist [list [text]] ｜ "
+    "/steam achievement_blacklist names ｜ "
     "/steam achievement_blacklist del 730,570 ｜ "
     "/steam achievement_blacklist del all"
 )
-_HINT = "提示：删除单个用 del <AppID>；清空全部用 del all。"
+_HINT = "提示：删除单个用 del <AppID>；清空全部用 del all；补全游戏名用 names。"
 
 
 def _event_message_text(event) -> str:
@@ -149,6 +150,46 @@ async def achievement_blacklist(plugin, event, action: str = "", value: str = ""
             yield event.plain_result(
                 "图片渲染失败，已退回文本输出：\n" + _render_list(monitor, page)
             )
+        return
+
+    # 补全游戏名：names / refresh / 补名
+    if verb in ("names", "name", "refresh", "补名"):
+        store = getattr(monitor, "blacklist_store", None)
+        if store is None or not hasattr(store, "missing_name_appids"):
+            yield event.plain_result("当前版本不支持补全游戏名。")
+            return
+
+        missing = store.missing_name_appids()
+        if not missing:
+            yield event.plain_result(
+                f"成就黑名单共 {len(monitor.list_entries())} 条，全部已有游戏名，无需补全。"
+            )
+            return
+
+        fetcher = getattr(plugin, "get_game_names_batch", None)
+        if not callable(fetcher):
+            yield event.plain_result("当前运行环境不支持批量查询游戏名。")
+            return
+
+        try:
+            names = await fetcher(missing)
+        except Exception as exc:
+            logger.error(f"[成就黑名单] 批量查询游戏名失败: {exc}")
+            yield event.plain_result("查询 Steam 商店失败，请稍后重试。")
+            return
+
+        filled = store.update_names(names or {})
+        remaining = len(store.missing_name_appids())
+        lines = [f"已补全 {filled} 条游戏名（本次尝试 {len(missing)} 条）。"]
+        if remaining:
+            lines.append(
+                f"仍有 {remaining} 条未查到，可能是已下架、AppID 无效或商店接口暂时不可用，"
+                "可稍后再执行一次。"
+            )
+        else:
+            lines.append("所有条目均已有游戏名。")
+        lines.append("可发送 /steam achievement_blacklist 查看最新表格。")
+        yield event.plain_result("\n".join(lines))
         return
 
     # 删除：del / delete / rm / remove

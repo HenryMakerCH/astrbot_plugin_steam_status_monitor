@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """成就黑名单表格图片渲染（简易版）。
 
-一张图输出全部条目，条目较多时自动分两栏，避免超长图片被缩放到看不清。
+一张图输出全部条目，固定单栏，表格结构优先。
 """
 import io
 
@@ -34,12 +34,10 @@ REASON_LABELS = {
 }
 
 PADDING = 24
-COL_GAP = 18
 ROW_HEIGHT = 32
 HEADER_HEIGHT = 34
 TITLE_HEIGHT = 58
 FOOTER_HEIGHT = 44
-TWO_COLUMN_THRESHOLD = 42
 
 # 列宽：序号 / AppID / 游戏名 / 时间 / 原因
 COLUMNS = (46, 116, 300, 132, 100)
@@ -174,17 +172,10 @@ def render_achievement_blacklist_image(entries, title_suffix="", font_path=None)
     measure_img = Image.new("RGB", (1, 1))
     measure_draw = ImageDraw.Draw(measure_img)
 
-    two_columns = len(entries) > TWO_COLUMN_THRESHOLD
-    if two_columns:
-        per_column = (len(entries) + 1) // 2
-        left = entries[:per_column]
-        right = entries[per_column:]
-        rows = max(len(left), len(right))
-    else:
-        left, right, rows = entries, [], len(entries)
+    rows = len(entries)
 
     table_height = HEADER_HEIGHT + rows * ROW_HEIGHT
-    width = TABLE_WIDTH * (2 if two_columns else 1) + COL_GAP * (1 if two_columns else 0) + PADDING * 2
+    width = TABLE_WIDTH + PADDING * 2
     height = TITLE_HEIGHT + table_height + FOOTER_HEIGHT + PADDING
 
     img = Image.new("RGB", (width, height), BG_COLOR)
@@ -201,9 +192,7 @@ def render_achievement_blacklist_image(entries, title_suffix="", font_path=None)
 
     fonts = (font_header, font_cell, font_small)
     table_top = TITLE_HEIGHT
-    _draw_table(draw, left, 1, PADDING, table_top, fonts)
-    if two_columns:
-        _draw_table(draw, right, len(left) + 1, PADDING + TABLE_WIDTH + COL_GAP, table_top, fonts)
+    _draw_table(draw, entries, 1, PADDING, table_top, fonts)
 
     # 页脚提示
     hint = "删除：/steam achievement_blacklist del <AppID>　清空：del all"
