@@ -64,6 +64,8 @@
 | `smart_poll_intervals` | 智能轮询各状态间隔（分钟，逗号分隔） | `1,3,5,10,20,30` |
 | `retry_times` | Steam API 请求重试次数 | 3 |
 | `max_group_size` | 单群最大监控人数 | 20 |
+| `game_filter_mode` | 游戏过滤模式（全部游戏/白名单/黑名单，修改后立即生效） | 全部游戏 |
+| `game_filter_ids` | 过滤 AppID 列表（逗号分隔，修改后立即生效） | 空 |
 | `detailed_poll_log` | 详细轮询日志开关 | true |
 | `enable_achievement_poll` | 成就轮询推送开关 | true |
 | `enable_steam_style` | Steam列表渲染风格开关（开启=steam风格；关闭=原卡片风格） | true |
@@ -189,6 +191,9 @@ AstrBot 只扫描 `Star` 子类上的命令装饰器，注册桩必须留在插�
 - `/steam set [参数] [值]` 设置配置参数（如 `/steam set poll_interval_sec 30`）
 - `/steam addid [SteamID/链接/好友码] [@用户] [备注名]` 添加玩家并可选 **@用户** 绑定（通过 @ 群成员完成QQ绑定，支持多种格式）
 - `/steam delid [SteamID/好友码/链接]` 从本群监控列表删除SteamID
+- `/steam BL [AppID]` 强制加入游戏黑名单（逗号/全角逗号/空格分隔多个，自动切换为黑名单模式，立即生效）
+- `/steam BL list` 查看当前过滤模式与黑名单
+- `/steam BL del [AppID]` 从黑名单删除（支持多个 AppID）
 - `/steam push_group [SteamID]` 添加id到联动推送的副群（轮询一次通知多个群聊）
 - `/steam delpush_group [SteamID]` 删除id联动推送的副群
 - `/steam openbox [SteamID/好友码/链接]` 查看指定SteamID的全部详细信息
@@ -227,6 +232,12 @@ pip install httpx pillow
 > 如果本项目对您的生活 / 工作产生了帮助，或者您关注本项目的未来发展，请给项目 Star，这是我维护这个开源项目的动力 ❤️。
 
 ## 更新记录
+- V4.11.2（2026/10/19）
+  - **启动游戏卡**：新增 `APPID <id>` 徽标，位于「正在玩」右侧，9px 次级灰色、与状态文字垂直居中；右下角版本号水印改为 7px 浅灰蓝，修复旧版颜色过暗（深色背景上对比度约 1.1:1）导致的看不清问题。
+  - **新指令 `/steam BL`（管理员）**：强制黑名单管理。`/steam BL 730,431960` 加入并自动切换为黑名单模式；`/steam BL list` 查看当前模式与名单；`/steam BL del 730` 删除。支持逗号、全角逗号、空格分隔，自动去重与前导零归一化，修改后立即生效，无需重启。
+  - **修复**：黑白名单读取现支持全角逗号与空格分隔，并按数值归一化比较，`0730` 与 `730` 不再漏匹配。
+  - **文案**：修正 `_conf_schema.json` 中黑白名单两项「修改后重启」的过时说明为「修改后立即生效」。
+
 - V4.11.1（2026/10/19）
   - **用户上下线推送（新功能，默认关闭 / opt-in）**：监控玩家上线/离线时推送「已上线 / 已离线」纯文本通知（`enable_user_online_notify` / `enable_user_offline_notify`，修改后立即生效）。基于轮询快照的 `personastate` 差分实现，与游戏会话状态机解耦；上线推送与同一轮“开始游玩”互斥，避免同一事件打扰两次。
   - **180 秒离线防抖**：检测到离线后先进入 180 秒确认窗，窗口内重新上线不推送；待定状态跨重启保留，重启后由首轮快照确认仍离线才结算。窗口内该玩家的复查轮询自动钳到 60 秒。
