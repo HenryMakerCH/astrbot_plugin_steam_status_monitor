@@ -504,23 +504,7 @@ def render_game_start_image(player_name, avatar_path, game_name, cover_path, pla
 
     # “正在玩”
     status_y = text_y + len(player_lines) * line_height
-    status_text = "正在玩"
-    status_bbox = draw.textbbox((0, 0), status_text, font=font)
-    draw.text((name_x, status_y), status_text, font=font, fill=(200,255,200,255))
-
-    # AppID 徽标：紧贴“正在玩”右侧，与状态文字垂直居中
-    game_id_text = str(game_id or "").strip()
-    if game_id_text.isdigit() and game_id_text.lstrip("0"):
-        font_appid = load_truetype("NotoSansHans-Regular.otf", 9)
-        appid_text = f"APPID {game_id_text}"
-        appid_bbox = draw.textbbox((0, 0), appid_text, font=font_appid)
-        appid_y = status_y + (
-            (status_bbox[1] + status_bbox[3]) - (appid_bbox[1] + appid_bbox[3])
-        ) // 2
-        draw.text(
-            (name_x + (status_bbox[2] - status_bbox[0]) + 10, appid_y),
-            appid_text, font=font_appid, fill=(168, 180, 190),
-        )
+    draw.text((name_x, status_y), "正在玩", font=font, fill=(200,255,200,255))
     # 游戏名多行（亮绿色 129,173,81）
     game_y = status_y + line_height
     for idx, line in enumerate(game_name_lines):
@@ -540,19 +524,39 @@ def render_game_start_image(player_name, avatar_path, game_name, cover_path, pla
     else:
         print("[render_game_start_image] 未获取到游戏时长，playtime_hours=None")
 
+    # GameId：右下角最底部，与版本号上下堆叠
+    game_id_text = str(game_id or "").strip()
+    appid_top = None
+    if game_id_text.isdigit() and game_id_text.lstrip("0"):
+        font_appid = load_truetype("NotoSansHans-Regular.otf", 9)
+        appid_text = f"GameId:{game_id_text}"
+        appid_bbox = draw.textbbox((0, 0), appid_text, font=font_appid)
+        appid_w = appid_bbox[2] - appid_bbox[0]
+        appid_h = appid_bbox[3] - appid_bbox[1]
+        appid_y = img_h - appid_h - 4
+        appid_top = appid_y + appid_bbox[1]
+        draw.text(
+            (img_w - appid_w - 6, appid_y),
+            appid_text, font=font_appid, fill=(168, 180, 190),
+        )
+
     # 在线人数渲染（放在最后，确保不会被玩家名遮挡）
     if online_text:
         draw.text((img_w - online_text_w, 10), online_text, font=font_online, fill=(120,180,255,180))
 
-    # 右下角版本号水印（7px 浅灰蓝；3 元组 fill，避免 alpha 被 convert("RGB") 丢弃）
+    # 右下角版本号水印（7px 浅灰蓝；有 GameId 时堆叠在它上方 4px）
     if version:
         font_version = load_truetype("NotoSansHans-Regular.otf", 7)
         v_text = f"v{version}"
         v_bbox = draw.textbbox((0, 0), v_text, font=font_version)
         v_w = v_bbox[2] - v_bbox[0]
         v_h = v_bbox[3] - v_bbox[1]
+        if appid_top is not None:
+            v_y = appid_top - 4 - v_bbox[3]
+        else:
+            v_y = img_h - v_h - 4
         draw.text(
-            (img_w - v_w - 6, img_h - v_h - 4),
+            (img_w - v_w - 6, v_y),
             v_text, font=font_version, fill=(170, 185, 195),
         )
 
