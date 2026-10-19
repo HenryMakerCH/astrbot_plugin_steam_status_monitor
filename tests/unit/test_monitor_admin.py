@@ -23,6 +23,9 @@ class PluginStub:
         self.achievement_snapshots = {}
         self.achievement_fail_count = {}
         self._session_meta = {}
+        self._presence_online_since = {}
+        self._presence_pending_offline = {}
+        self._presence_settled_offline_at = {}
         self.config = {}
 
     @property

@@ -22,6 +22,8 @@ class FakePlugin(SessionQuitMixin, StatusChangeTrackingMixin):
         self._pending_end_notifications = {}
         self._presence_online_since = {}
         self._presence_pending_offline = {}
+        self._presence_settled_offline_at = {}
+        self.running_groups = {"g1"}
         self.achievement_poll_tasks = {}
         self.achievement_snapshots = {}
         self.achievement_monitor = None
@@ -36,6 +38,9 @@ class FakePlugin(SessionQuitMixin, StatusChangeTrackingMixin):
 
     def _record_playtime(self, sid, gameid, game_name, duration_min):
         self.playtime.append((sid, gameid, game_name, duration_min))
+
+    def _save_presence_state(self):
+        return None
 
     def _record_session(self, **kwargs):
         self.sessions.append(kwargs)

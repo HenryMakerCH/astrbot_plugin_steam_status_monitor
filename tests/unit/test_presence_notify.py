@@ -77,6 +77,13 @@ SEND_METHODS = (
 )
 
 
+def _enable_presence(plugin):
+    """presence 用例显式开启两个开关（默认值已改为 opt-in）。"""
+    plugin.config["enable_user_online_notify"] = True
+    plugin.config["enable_user_offline_notify"] = True
+    return plugin
+
+
 def _build_send_plugin():
     methods = _load_notification_methods(SEND_METHODS)
     plugin_type = type("SendFakePlugin", (), {name: methods[name] for name in SEND_METHODS})
@@ -119,10 +126,29 @@ class PresenceTransitionTests(unittest.TestCase):
     def test_current_without_presence_fields_is_unknown(self):
         self.assertIsNone(presence_transition({"personastate": 1}, {}))
 
+    def test_zero_gameid_counts_as_offline(self):
+        self.assertEqual(
+            "offline",
+            presence_transition(
+                {"personastate": 1, "gameid": 0}, {"personastate": 0, "gameid": 0}
+            ).kind,
+        )
+        self.assertIsNone(
+            presence_transition(
+                {"personastate": 1, "gameid": 0}, {"personastate": 1, "gameid": 0}
+            )
+        )
+
+    def test_non_numeric_personastate_does_not_raise(self):
+        self.assertEqual(
+            "offline",
+            presence_transition({"personastate": 1}, {"personastate": "bad"}).kind,
+        )
+
 
 class PresenceNotifyTests(unittest.IsolatedAsyncioTestCase):
     async def _check(self, status, baseline, **kwargs):
-        plugin = FakePlugin(status)
+        plugin = _enable_presence(FakePlugin(status))
         plugin.config.update(kwargs.pop("config", {}))
         if baseline is not None:
             plugin.group_last_states["g1"]["s1"] = baseline
@@ -150,7 +176,7 @@ class PresenceNotifyTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("s1", plugin._presence_online_since)
 
     async def test_offline_notification_carries_online_duration_after_debounce(self):
-        plugin = FakePlugin({"personastate": 1, "name": "P"})
+        plugin = _enable_presence(FakePlugin({"personastate": 1, "name": "P"}))
         plugin.group_last_states["g1"]["s1"] = {"personastate": 0}
         with patch(CHECK_TIME, return_value=1000):
             await plugin.check_status_change("g1", single_sid="s1", status_override={"personastate": 1, "name": "P"})
@@ -160,6 +186,11 @@ class PresenceNotifyTests(unittest.IsolatedAsyncioTestCase):
             await plugin.check_status_change("g1", single_sid="s1", status_override={"personastate": 0, "name": "P"})
         self.assertNotIn("g1", plugin._pending_end_notifications)
         self.assertAlmostEqual(20.0, plugin._presence_pending_offline["s1"]["online_minutes"])
+        # 窗口结束前再做一次新鲜复查（结算要求 75 秒内的离线观测）
+        with patch(CHECK_TIME, return_value=2320):
+            await plugin.check_status_change(
+                "g1", single_sid="s1", status_override={"personastate": 0, "name": "P"}
+            )
         # 180 秒窗口结束仍离线 → 结算推送（时长用检测时刻算好的值）
         plugin._settle_pending_offline_presence(2200 + 180)
         offline = next(n for n in plugin._pending_end_notifications["g1"] if n["type"] == "offline")
@@ -169,7 +200,7 @@ class PresenceNotifyTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("s1", plugin._presence_online_since)
 
     async def test_recheck_within_window_keeps_pending_and_clamps_poll(self):
-        plugin = FakePlugin({"personastate": 0, "name": "P"})
+        plugin = _enable_presence(FakePlugin({"personastate": 0, "name": "P"}))
         plugin.group_last_states["g1"]["s1"] = {"personastate": 1}
         with patch(CHECK_TIME, return_value=1000):
             await plugin.check_status_change("g1", single_sid="s1", status_override={"personastate": 0, "name": "P"})
@@ -181,7 +212,7 @@ class PresenceNotifyTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("g1", plugin._pending_end_notifications)
 
     async def test_online_return_within_window_cancels_pending(self):
-        plugin = FakePlugin({"personastate": 1, "name": "P"})
+        plugin = _enable_presence(FakePlugin({"personastate": 1, "name": "P"}))
         plugin.group_last_states["g1"]["s1"] = {"personastate": 0}
         with patch(CHECK_TIME, return_value=1000):
             await plugin.check_status_change("g1", single_sid="s1", status_override={"personastate": 1, "name": "P"})
@@ -202,15 +233,20 @@ class PresenceNotifyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("s1", plugin._presence_pending_offline)
 
     async def test_settle_enqueues_for_every_monitoring_group(self):
-        plugin = FakePlugin({"personastate": 0, "name": "P"})
+        plugin = _enable_presence(FakePlugin({"personastate": 0, "name": "P"}))
         plugin.group_steam_ids = {"g1": ["s1"], "g2": ["s1"]}
+        plugin.running_groups = {"g1", "g2"}
         plugin.group_last_states = {"g1": {"s1": {"personastate": 1}}, "g2": {"s1": {"personastate": 1}}}
         with patch(CHECK_TIME, return_value=1700):
             await plugin.check_status_change("g1", single_sid="s1", status_override={"personastate": 0, "name": "P"})
         with patch(CHECK_TIME, return_value=1700):
             await plugin.check_status_change("g2", single_sid="s1", status_override={"personastate": 0, "name": "P"})
+        with patch(CHECK_TIME, return_value=1820):
+            await plugin.check_status_change("g1", single_sid="s1", status_override={"personastate": 0, "name": "P"})
+        with patch(CHECK_TIME, return_value=1820):
+            await plugin.check_status_change("g2", single_sid="s1", status_override={"personastate": 0, "name": "P"})
         plugin.group_monitor_enabled = {"g1": True, "g2": False}
-        plugin._settle_pending_offline_presence(1700 + 180)
+        plugin._settle_pending_offline_presence(1880)
         self.assertEqual(["offline"], [n["type"] for n in plugin._pending_end_notifications["g1"]])
         self.assertNotIn("g2", plugin._pending_end_notifications)
 
@@ -263,6 +299,105 @@ class PresenceNotifyTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("g1", plugin._pending_end_notifications)
         self.assertNotIn("s1", plugin._presence_pending_offline)
 
+    async def test_multi_group_offline_merge_preserves_earliest_window(self):
+        plugin = _enable_presence(FakePlugin({"personastate": 0, "name": "P"}))
+        plugin.group_steam_ids = {"g1": ["s1"], "g2": ["s1"]}
+        plugin.running_groups = {"g1", "g2"}
+        plugin.group_last_states = {
+            "g1": {"s1": {"personastate": 1}},
+            "g2": {"s1": {"personastate": 1}},
+        }
+        plugin._presence_online_since["s1"] = 900
+        with patch(CHECK_TIME, return_value=1000):
+            await plugin.check_status_change(
+                "g1", single_sid="s1", status_override={"personastate": 0, "name": "P"}
+            )
+        with patch(CHECK_TIME, return_value=1060):
+            await plugin.check_status_change(
+                "g2", single_sid="s1", status_override={"personastate": 0, "name": "P"}
+            )
+        pending = plugin._presence_pending_offline["s1"]
+        self.assertEqual(1000, pending["detected_at"])
+        self.assertEqual(1180, pending["deadline"])
+        self.assertAlmostEqual(1.67, pending["online_minutes"], places=2)
+        self.assertEqual(1060, pending["last_seen_offline_at"])
+
+    async def test_skip_push_offline_keeps_pending_after_restart(self):
+        plugin = _enable_presence(FakePlugin({"personastate": 0, "name": "P"}))
+        plugin.group_steam_ids = {"g1": ["s1"], "g2": ["s1"]}
+        plugin.running_groups = {"g1", "g2"}
+        plugin.group_last_states = {
+            "g1": {"s1": {"personastate": 0}},
+            "g2": {"s1": {"personastate": 1}},
+        }
+        plugin._presence_pending_offline["s1"] = {
+            "detected_at": 900,
+            "deadline": 1080,
+            "last_seen_offline_at": 900,
+            "online_since": 800,
+            "online_minutes": 1.67,
+            "name": "P",
+        }
+        with patch(CHECK_TIME, return_value=1000):
+            await plugin.check_status_change(
+                "g2",
+                single_sid="s1",
+                status_override={"personastate": 0, "name": "P"},
+                skip_push=True,
+            )
+        pending = plugin._presence_pending_offline["s1"]
+        self.assertEqual(1080, pending["deadline"])
+        self.assertAlmostEqual(1.67, pending["online_minutes"], places=2)
+        self.assertEqual(1000, pending["last_seen_offline_at"])
+        self.assertNotIn("g2", plugin._pending_end_notifications)
+
+    async def test_settle_defers_stale_observation(self):
+        plugin = await self._check({"personastate": 0, "name": "P"}, {"personastate": 1})
+        plugin._settle_pending_offline_presence(1700 + 180)
+        # 最后一次离线观测已过期（>75s）：保留待定，等待下一轮新鲜快照
+        self.assertIn("s1", plugin._presence_pending_offline)
+        self.assertNotIn("g1", plugin._pending_end_notifications)
+
+    async def test_settle_skips_group_not_running(self):
+        plugin = _enable_presence(FakePlugin({"personastate": 0, "name": "P"}))
+        plugin.group_steam_ids = {"g1": ["s1"], "g2": ["s1"]}
+        plugin.running_groups = {"g1"}
+        plugin.group_last_states = {"g1": {"s1": {"personastate": 1}}}
+        with patch(CHECK_TIME, return_value=1700):
+            await plugin.check_status_change(
+                "g1", single_sid="s1", status_override={"personastate": 0, "name": "P"}
+            )
+        with patch(CHECK_TIME, return_value=1820):
+            await plugin.check_status_change(
+                "g1", single_sid="s1", status_override={"personastate": 0, "name": "P"}
+            )
+        plugin._settle_pending_offline_presence(1880)
+        self.assertEqual(
+            ["offline"], [item["type"] for item in plugin._pending_end_notifications["g1"]]
+        )
+        self.assertNotIn("g2", plugin._pending_end_notifications)
+
+    async def test_switches_default_off(self):
+        plugin = FakePlugin({"personastate": 1, "name": "P"})
+        plugin.group_last_states["g1"]["s1"] = {"personastate": 0}
+        with patch(CHECK_TIME, return_value=1700):
+            await plugin.check_status_change(
+                "g1", single_sid="s1", status_override={"personastate": 1, "name": "P"}
+            )
+        # 默认关闭：上线只记账不推送
+        self.assertNotIn("g1", plugin._pending_end_notifications)
+        self.assertEqual(1700, plugin._presence_online_since["s1"])
+
+        plugin.group_last_states["g1"]["s1"] = {"personastate": 1}
+        with patch(CHECK_TIME, return_value=1900):
+            await plugin.check_status_change(
+                "g1", single_sid="s1", status_override={"personastate": 0, "name": "P"}
+            )
+        # 默认关闭：离线不建待定、不推送
+        self.assertNotIn("s1", plugin._presence_pending_offline)
+        self.assertNotIn("g1", plugin._pending_end_notifications)
+        self.assertNotIn("s1", plugin._presence_online_since)
+
 
 class PresenceSendTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -292,12 +427,21 @@ class PresenceSendTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([], failed)
         _, chain = self.plugin.sent[0]
-        self.assertEqual(["🌑 小刚 已离线\n"], [component.text for component in chain.chain])
+        self.assertEqual(["🌑【小刚】已离线\n"], [component.text for component in chain.chain])
 
     async def test_presence_event_key_distinguishes_transitions(self):
         first = self.plugin._notification_event_key({"type": "offline", "sid": "s1", "event_time": 1000}, "sess")
         second = self.plugin._notification_event_key({"type": "offline", "sid": "s1", "event_time": 2000}, "sess")
         self.assertNotEqual(first, second)
+
+    async def test_text_disabled_drops_presence_without_retry(self):
+        self.plugin.config.update({"notify_send_text": False, "notify_send_image": True})
+        failed = await self.plugin._send_merged_notification(
+            "g1",
+            [{"type": "online", "sid": "s1", "name": "小明", "event_time": 1000, "online_minutes": None}],
+        )
+        self.assertEqual([], failed)
+        self.assertEqual([], self.plugin.sent)
 
     async def test_render_notification_image_skips_presence_types(self):
         methods = _load_notification_methods({"_render_notification_image"})
