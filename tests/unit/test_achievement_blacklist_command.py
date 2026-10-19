@@ -111,9 +111,62 @@ class AchievementBlacklistCommandTests(unittest.IsolatedAsyncioTestCase):
         event, _ = await _run(plugin, "/steam achievement_blacklist")
 
         image = Image.open(event.images[0])
-        # 86 条走双栏，宽度应明显大于单栏
-        self.assertGreater(image.width, 1200)
-        self.assertGreater(image.height, 1000)
+        # 固定单栏：宽度恒定，高度覆盖全部 86 行
+        self.assertEqual(742, image.width)
+        self.assertGreater(image.height, 86 * 32)
+
+    async def test_names_backfills_missing_only(self):
+        from unittest.mock import AsyncMock
+
+        store = self._store({
+            "730": {"game_name": "", "added_at": 2, "reason": REASON_NO_STATS, "source": SOURCE_AUTO},
+            "570": {"game_name": "已有名字", "added_at": 1, "reason": REASON_NO_STATS, "source": SOURCE_AUTO},
+        })
+        plugin = self._plugin(store)
+        plugin.get_game_names_batch = AsyncMock(return_value={"730": "Counter-Strike 2"})
+
+        _, texts = await _run(plugin, "/steam achievement_blacklist names")
+
+        plugin.get_game_names_batch.assert_awaited_once_with(["730"])
+        self.assertEqual("Counter-Strike 2", store.entries["730"]["game_name"])
+        self.assertEqual("已有名字", store.entries["570"]["game_name"])
+        self.assertIn("已补全 1 条游戏名", texts[0])
+        self.assertIn("所有条目均已有游戏名", texts[0])
+
+    async def test_names_reports_remaining_unknown(self):
+        from unittest.mock import AsyncMock
+
+        store = self._store({
+            "730": {"game_name": "", "added_at": 2, "reason": REASON_NO_STATS, "source": SOURCE_AUTO},
+            "999999": {"game_name": "", "added_at": 1, "reason": REASON_NO_STATS, "source": SOURCE_AUTO},
+        })
+        plugin = self._plugin(store)
+        plugin.get_game_names_batch = AsyncMock(return_value={"730": "CS2"})
+
+        _, texts = await _run(plugin, "/steam achievement_blacklist names")
+
+        self.assertIn("已补全 1 条", texts[0])
+        self.assertIn("仍有 1 条未查到", texts[0])
+
+    async def test_names_when_all_have_names(self):
+        store = self._store({"730": {"game_name": "CS2", "added_at": 1,
+                                     "reason": REASON_NO_STATS, "source": SOURCE_AUTO}})
+        plugin = self._plugin(store)
+        _, texts = await _run(plugin, "/steam achievement_blacklist names")
+        self.assertIn("全部已有游戏名", texts[0])
+
+    async def test_names_query_failure_is_safe(self):
+        from unittest.mock import AsyncMock
+
+        store = self._store({"730": {"game_name": "", "added_at": 1,
+                                     "reason": REASON_NO_STATS, "source": SOURCE_AUTO}})
+        plugin = self._plugin(store)
+        plugin.get_game_names_batch = AsyncMock(side_effect=RuntimeError("network down"))
+
+        _, texts = await _run(plugin, "/steam achievement_blacklist names")
+
+        self.assertIn("查询 Steam 商店失败", texts[0])
+        self.assertEqual("", store.entries["730"]["game_name"])
 
     async def test_empty_list_falls_back_to_text(self):
         store = self._store({})

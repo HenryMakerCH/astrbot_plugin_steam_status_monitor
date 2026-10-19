@@ -7,9 +7,9 @@ from PIL import Image
 from src.presentation.renderers.achievement_blacklist import (
     BORDER_COLOR,
     HEADER_HEIGHT,
+    PADDING,
     ROW_HEIGHT,
     TABLE_WIDTH,
-    TWO_COLUMN_THRESHOLD,
     render_achievement_blacklist_image,
 )
 
@@ -34,12 +34,13 @@ class AchievementBlacklistRenderTests(unittest.TestCase):
         # 标题 + 表头 + 10 行 + 页脚
         self.assertGreater(image.height, HEADER_HEIGHT + 10 * ROW_HEIGHT)
 
-    def test_large_list_uses_two_columns(self):
-        image = _render(_entries(TWO_COLUMN_THRESHOLD + 5))
-        self.assertGreater(image.width, TABLE_WIDTH * 2)
-        # 双栏后高度应明显小于单栏
-        single_height = _render(_entries(20)).height
-        self.assertLess(image.height, single_height * 3)
+    def test_large_list_stays_single_column(self):
+        small = _render(_entries(5))
+        large = _render(_entries(86))
+        # 固定单栏：宽度恒定，高度随行数线性增长
+        self.assertEqual(small.width, large.width)
+        self.assertEqual(TABLE_WIDTH + PADDING * 2, large.width)
+        self.assertGreater(large.height, small.height)
 
     def test_row_separators_present(self):
         image = _render(_entries(5))
