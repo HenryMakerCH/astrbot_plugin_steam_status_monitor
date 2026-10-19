@@ -1,5 +1,6 @@
 import os
 import random
+import re
 import shutil
 import tempfile
 import time
@@ -12,6 +13,13 @@ from ...presentation.renderers.game_end import render_game_end
 from ...presentation.renderers.game_start import render_game_start
 from ...presentation.renderers.owned_game import render_owned_game
 from ...presentation.renderers.image_crop import crop_image_auto
+from ...domain.monitoring.game_filter import (
+    FILTER_MODE_BLACKLIST,
+    FILTER_MODE_WHITELIST,
+    add_appids,
+    parse_appids,
+    remove_appids,
+)
 from ...plugin.runtime_config import apply_hot_update
 from ...shared.fonts import resolve_font_path
 from ...shared.logging import logger
@@ -29,6 +37,9 @@ HELP_TEXT = (
     "/steam set [参数] [值] - 设置配置参数\n"
     "/steam addid [SteamID] - 添加SteamID\n"
     "/steam delid [SteamID] - 删除SteamID\n"
+    "/steam BL [AppID] - 强制加入游戏黑名单（多个用逗号/空格分隔，自动切换黑名单模式）\n"
+    "/steam BL list - 查看当前过滤模式与黑名单\n"
+    "/steam BL del [AppID] - 从黑名单删除\n"
     "/steam push_group [SteamID] - 添加id到联动推送的副群\n"
     "/steam delpush_group [SteamID] [群号可选] - 删除id联动推送的副群，可指定群号\n"
     "/steam openbox [SteamID] - 查看指定SteamID的全部信息\n"
@@ -68,6 +79,120 @@ async def config(plugin, event):
 async def set_config(plugin, event, key: str, value: str):
     _, msg = apply_hot_update(plugin, key, value)
     yield event.plain_result(msg)
+
+
+_BL_TAIL_RE = re.compile(
+    r"^[/.。／]*\s*(?:steam\s+)?(?:bl|blacklist)\b\s*(.*)$",
+    re.IGNORECASE,
+)
+
+
+def _event_message_text(event) -> str:
+    raw = getattr(event, "message_str", None)
+    if raw is None:
+        getter = getattr(event, "get_message_str", None)
+        raw = getter() if callable(getter) else ""
+    return str(raw or "").strip()
+
+
+def _blacklist_args_text(event, action: str = "", value: str = "") -> str:
+    """优先读原始消息尾部：框架按空格分词，超过声明参数个数的 token 会被静默丢弃。"""
+    match = _BL_TAIL_RE.match(_event_message_text(event))
+    if match:
+        return match.group(1).strip()
+    return " ".join(str(x).strip() for x in (action, value) if str(x).strip())
+
+
+def _count_ids(ids_text: str) -> int:
+    return len([x for x in str(ids_text or "").split(",") if x.strip()])
+
+
+async def blacklist(plugin, event, action: str = "", value: str = ""):
+    '''强制黑名单：/steam BL [AppID...] 加入并切黑名单；list 查看；del 删除。'''
+    config = getattr(plugin, "config", None)
+    if config is None:
+        yield event.plain_result("插件配置不可用，无法管理黑名单。")
+        return
+
+    raw_args = _blacklist_args_text(event, action, value)
+    tokens = [item for item in re.split(r"[,，\s]+", raw_args) if item]
+    mode = str(config.get("game_filter_mode", "全部游戏") or "全部游戏")
+    current = str(config.get("game_filter_ids", "") or "")
+
+    verb = tokens[0].lower() if tokens else ""
+    if not tokens or verb in ("list", "ls", "show", "help"):
+        ids = [item for item in re.split(r"[,，\s]+", current) if item]
+        lines = [f"游戏过滤模式：{mode}"]
+        lines.append(
+            f"过滤列表（{len(ids)}）：{', '.join(ids)}" if ids else "过滤列表为空。"
+        )
+        if mode == FILTER_MODE_BLACKLIST:
+            lines.append("用法：/steam BL 730,431960 ｜ /steam BL del 730")
+        else:
+            lines.append("提示：当前不是黑名单模式，发送 /steam BL <AppID> 会自动切换。")
+        yield event.plain_result("\n".join(lines))
+        return
+
+    removing = verb in ("del", "delete", "rm", "remove")
+    raw_ids = tokens[1:] if removing else tokens
+    if not raw_ids:
+        yield event.plain_result("用法：/steam BL del 730,431960")
+        return
+
+    appids, invalid = parse_appids(" ".join(raw_ids))
+    if invalid:
+        steamids = [t for t in invalid if t.isascii() and t.isdigit() and len(t) == 17]
+        others = [t for t in invalid if t not in steamids]
+        lines = []
+        if others:
+            lines.append(f"无法识别为 AppID：{', '.join(others)}")
+            lines.append("AppID 应为 1–10 位纯数字（如 730）。")
+        if steamids:
+            lines.append(f"{', '.join(steamids)} 是 SteamID64，不是游戏 AppID。")
+            lines.append("请填写商店链接中的 AppID，如 store.steampowered.com/app/730 → 730。")
+        yield event.plain_result("\n".join(lines))
+        return
+    if not appids:
+        yield event.plain_result("没有可处理的 AppID。")
+        return
+
+    if removing:
+        new_ids, removed, missing = remove_appids(current, appids)
+        if not removed:
+            yield event.plain_result(
+                f"以下 AppID 不在黑名单中：{', '.join(missing)}\n当前模式：{mode}"
+            )
+            return
+        config["game_filter_ids"] = new_ids
+        if hasattr(config, "save_config"):
+            config.save_config()
+        lines = [f"已从黑名单删除：{', '.join(removed)}（剩余 {_count_ids(new_ids)} 个）"]
+        if missing:
+            lines.append(f"不在名单中：{', '.join(missing)}")
+        lines.append(new_ids if new_ids else "黑名单已清空（仍为黑名单模式）。")
+        yield event.plain_result("\n".join(lines))
+        return
+
+    new_ids, added = add_appids(current, appids)
+    already = [item for item in appids if item not in added]
+    switched = mode != FILTER_MODE_BLACKLIST
+    if added or switched:
+        config["game_filter_ids"] = new_ids
+        if switched:
+            config["game_filter_mode"] = FILTER_MODE_BLACKLIST
+        if hasattr(config, "save_config"):
+            config.save_config()
+    lines = []
+    if added:
+        lines.append(f"已加入黑名单：{', '.join(added)}（当前共 {_count_ids(new_ids)} 个）")
+    if already:
+        lines.append(f"已在黑名单中：{', '.join(already)}")
+    if switched:
+        lines.append(f"已自动切换过滤模式：{mode} → {FILTER_MODE_BLACKLIST}（立即生效）")
+        if mode == FILTER_MODE_WHITELIST:
+            lines.append("注意：原白名单不再生效，除黑名单外的游戏都会播报。")
+    lines.append(new_ids if new_ids else "黑名单为空。")
+    yield event.plain_result("\n".join(lines))
 
 
 async def syncgames(plugin, event, param: str = ""):

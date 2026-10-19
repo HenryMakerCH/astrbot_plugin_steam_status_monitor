@@ -52,7 +52,7 @@ class SteamStatusMonitorV3(
             logger.error("当前插件已在运行中。请重启astrbot而非重载插件")
             return
         self._ssm_running = True
-        self._plugin_version = "4.11.1"
+        self._plugin_version = "4.11.2"
         self.context = context
         # 分群管理：所有状态数据均以 group_id 为 key
         self.group_steam_ids = {}         # {group_id: [steamid, ...]}
@@ -225,6 +225,13 @@ class SteamStatusMonitorV3(
     async def steam_delid(self, event: AstrMessageEvent, steamid: str, group_id_param: str = ""):
         '''从监控组删除SteamID；支持好友码/链接；可选传群号跨群删除：/steam delid [SteamID/好友码/链接] [群号]'''
         async for result in monitor.delid(self, event, steamid, group_id_param):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("steam BL", alias={"steam bl"})
+    async def steam_blacklist(self, event: AstrMessageEvent, action: str = "", value: str = ""):
+        '''强制黑名单：/steam BL [AppID...] 加入并切黑名单；list 查看；del [AppID...] 删除'''
+        async for result in ops.blacklist(self, event, action, value):
             yield result
 
     @filter.permission_type(filter.PermissionType.MEMBER)

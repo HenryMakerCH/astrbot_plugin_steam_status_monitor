@@ -371,7 +371,7 @@ async def get_playtime_hours(api_key, steamid, appid, retry_times=3, proxy=None)
             await asyncio.sleep(1)
     return 0.0
 
-def render_game_start_image(player_name, avatar_path, game_name, cover_path, playtime_hours=None, superpower=None, online_count=None, font_path=None, playtime_unowned=False, avatar_frame_path=None, horizontal_cover_path=None, version=None):
+def render_game_start_image(player_name, avatar_path, game_name, cover_path, playtime_hours=None, superpower=None, online_count=None, font_path=None, playtime_unowned=False, avatar_frame_path=None, horizontal_cover_path=None, version=None, game_id=None):
     # 字体
     font_bold = load_truetype("NotoSansHans-Medium.otf", 28)
     font = load_truetype("NotoSansHans-Regular.otf", 22)
@@ -504,7 +504,23 @@ def render_game_start_image(player_name, avatar_path, game_name, cover_path, pla
 
     # “正在玩”
     status_y = text_y + len(player_lines) * line_height
-    draw.text((name_x, status_y), "正在玩", font=font, fill=(200,255,200,255))
+    status_text = "正在玩"
+    status_bbox = draw.textbbox((0, 0), status_text, font=font)
+    draw.text((name_x, status_y), status_text, font=font, fill=(200,255,200,255))
+
+    # AppID 徽标：紧贴“正在玩”右侧，与状态文字垂直居中
+    game_id_text = str(game_id or "").strip()
+    if game_id_text.isdigit() and game_id_text.lstrip("0"):
+        font_appid = load_truetype("NotoSansHans-Regular.otf", 9)
+        appid_text = f"APPID {game_id_text}"
+        appid_bbox = draw.textbbox((0, 0), appid_text, font=font_appid)
+        appid_y = status_y + (
+            (status_bbox[1] + status_bbox[3]) - (appid_bbox[1] + appid_bbox[3])
+        ) // 2
+        draw.text(
+            (name_x + (status_bbox[2] - status_bbox[0]) + 10, appid_y),
+            appid_text, font=font_appid, fill=(168, 180, 190),
+        )
     # 游戏名多行（亮绿色 129,173,81）
     game_y = status_y + line_height
     for idx, line in enumerate(game_name_lines):
@@ -528,14 +544,17 @@ def render_game_start_image(player_name, avatar_path, game_name, cover_path, pla
     if online_text:
         draw.text((img_w - online_text_w, 10), online_text, font=font_online, fill=(120,180,255,180))
 
-    # 右下角版本号水印
+    # 右下角版本号水印（7px 浅灰蓝；3 元组 fill，避免 alpha 被 convert("RGB") 丢弃）
     if version:
-        font_version = load_truetype("NotoSansHans-Regular.otf", 8)
+        font_version = load_truetype("NotoSansHans-Regular.otf", 7)
         v_text = f"v{version}"
         v_bbox = draw.textbbox((0, 0), v_text, font=font_version)
         v_w = v_bbox[2] - v_bbox[0]
         v_h = v_bbox[3] - v_bbox[1]
-        draw.text((img_w - v_w - 6, img_h - v_h - 4), v_text, font=font_version, fill=(33, 46, 49, 120))
+        draw.text(
+            (img_w - v_w - 6, img_h - v_h - 4),
+            v_text, font=font_version, fill=(170, 185, 195),
+        )
 
     return img.convert("RGB")
 async def render_game_start(data_dir, steamid, player_name, avatar_url, gameid, game_name, api_key=None, superpower=None, online_count=None, sgdb_api_key=None, font_path=None, sgdb_game_name=None, appid=None, proxy=None, version=None, sgdb_api_base=None, steam_store_base=None, steam_api_base=None):
@@ -571,6 +590,7 @@ async def render_game_start(data_dir, steamid, player_name, avatar_url, gameid, 
         superpower, online_count, font_path=font_path,
         playtime_unowned=playtime_unowned, avatar_frame_path=avatar_frame_path,
         horizontal_cover_path=horizontal_cover_path, version=version,
+        game_id=str(appid or gameid or "").strip(),
     )
     buf = io.BytesIO()
     img.save(buf, format="PNG")

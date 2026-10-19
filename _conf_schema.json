@@ -275,14 +275,14 @@
     "default": 0
   },
   "game_filter_mode": {
-    "description": "游戏过滤模式 -修改后重启AstrBot生效",
+    "description": "游戏过滤模式 -修改后立即生效（可用 /steam BL 管理）",
     "type": "string",
     "hint": "全部游戏=监控所有；白名单=仅播报列表中的游戏；黑名单=列表中的游戏不播报",
     "default": "全部游戏",
     "enum": ["全部游戏", "白名单", "黑名单"]
   },
   "game_filter_ids": {
-    "description": "过滤游戏ID列表 -修改后重启AstrBot生效",
+    "description": "过滤游戏ID列表 -修改后立即生效（可用 /steam BL 管理）",
     "type": "string",
     "hint": "逗号分隔 gameid，如 4315770,431960",
     "default": ""
