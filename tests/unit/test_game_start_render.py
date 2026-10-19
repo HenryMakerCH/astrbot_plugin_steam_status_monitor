@@ -23,35 +23,51 @@ class GameStartBadgeTests(unittest.TestCase):
             image = _render(version="4.11.2")
         sizes = [call.args[1] for call in mocked.call_args_list if len(call.args) > 1]
         self.assertIn(7, sizes)
-        crop = image.crop((image.width - 40, image.height - 14, image.width, image.height))
+        crop = image.crop((image.width - 50, image.height - 32, image.width, image.height))
         self.assertGreater(max(max(pixel) for pixel in crop.getdata()), 120)
 
-    def test_appid_badge_drawn_next_to_status_row(self):
+    def test_gameid_badge_drawn_at_bottom_right(self):
         plain = _render()
         with_id = _render(game_id="570")
         bbox = ImageChops.difference(plain, with_id).getbbox()
         self.assertIsNotNone(bbox)
-        self.assertGreaterEqual(bbox[1], 30)
-        self.assertLessEqual(bbox[3], 110)
-        self.assertLess(bbox[2], 420)
+        self.assertGreaterEqual(bbox[0], with_id.width - 90)
+        self.assertLessEqual(bbox[2], with_id.width - 4)
+        self.assertGreaterEqual(bbox[1], 180)
+        self.assertLessEqual(bbox[3], 191)
+
+    def test_version_stacked_above_gameid(self):
+        only_id = _render(game_id="570")
+        both = _render(game_id="570", version="4.11.2")
+        bbox = ImageChops.difference(only_id, both).getbbox()
+        self.assertIsNotNone(bbox)
+        self.assertGreaterEqual(bbox[1], 165)
+        self.assertLessEqual(bbox[3], 181)
+        self.assertGreaterEqual(bbox[2], both.width - 40)
 
     def test_empty_game_id_draws_nothing(self):
         diff = ImageChops.difference(_render(game_id=None), _render(game_id=""))
         self.assertIsNone(diff.getbbox())
 
-    def test_long_name_640_canvas_keeps_badge(self):
+    def test_long_name_640_canvas_keeps_badge_at_bottom(self):
         with tempfile.TemporaryDirectory() as tmp:
             cover = os.path.join(tmp, "cover.jpg")
             Image.new("RGB", (600, 900), (20, 30, 40)).save(cover)
-            image = _render(
+            base = dict(
                 player_name="W" * 24,
                 game_name="CS2",
                 cover_path=cover,
                 playtime_hours=100.5,
-                version="4.11.2",
-                game_id="1091500",
+                version=None,
             )
-        self.assertEqual((640, 192), image.size)
+            plain = _render(game_id=None, **base)
+            with_id = _render(game_id="1091500", **base)
+        self.assertEqual((640, 192), with_id.size)
+        bbox = ImageChops.difference(plain, with_id).getbbox()
+        self.assertIsNotNone(bbox)
+        self.assertGreaterEqual(bbox[0], 550)
+        self.assertGreaterEqual(bbox[1], 181)
+        self.assertLessEqual(bbox[3], 191)
 
 
 class RenderGameStartWiringTests(unittest.IsolatedAsyncioTestCase):
