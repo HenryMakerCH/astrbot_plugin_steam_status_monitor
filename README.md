@@ -257,6 +257,7 @@ pip install httpx pillow
   - **修复**：多条上线/下线文本合并时缺少换行；启动基线 `skip_push` 误删其他群待定；结算早于本轮快照导致窗口末尾「离线+上线」双推；关闭文本、仅开图片时纯文本 presence 通知无限重试；未 `/steam on` 的群收到离线通知；结算后最多 300 秒才落盘。
   - **清理**：删除玩家、删除群、清空全部 ID、`/steam rs` 时同步清理 presence 运行时状态；联动推送（`push_groups`）共用 `online_since` 作为上线事件去重键。
   - **已知边界**：Steam 隐身（invisible）状态在 API 下表现为离线，无法识别；隐身但正在游戏时不会误报下线。
+  - **致谢**：上线/下线推送由社区贡献者 [@Katsukizuki](https://github.com/Katsukizuki) 提交（[PR #59](https://github.com/Maoer233/astrbot_plugin_steam_status_monitor/pull/59)）；发布版将其调整为默认关闭（opt-in），并修正多群合并、重启续期与重复推送等边界问题。
 
 - V4.10.1（2026/10/17）
   - **游戏库新入库播报（新功能，默认关闭）**：独立后台任务默认每 30 分钟（可配）检测被监控玩家 Steam 库新增游戏并播报「新入库」卡片；新玩家首轮只建立基线不播报，重启后自动补播停机期间的新增；`/steam set enable_owned_games_notify true` 可即时开启。
