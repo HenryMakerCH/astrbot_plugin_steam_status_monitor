@@ -393,7 +393,8 @@ class SessionService:
         if monitor is None:
             return
         achievements = await monitor.get_player_achievements(
-            plugin.API_KEY, session.group_id, session.sid, session.gameid
+            plugin.API_KEY, session.group_id, session.sid, session.gameid,
+            game_name=game_name,
         )
         plugin.achievement_snapshots[key] = list(achievements or [])
         try:

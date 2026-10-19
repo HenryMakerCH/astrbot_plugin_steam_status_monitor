@@ -20,7 +20,7 @@ from ..application.services.session_quit import SessionQuitMixin
 from ..application.services.status_change_tracking import StatusChangeTrackingMixin
 from ..application.services.polling_tracking import PollingTrackingMixin
 from ..domain.monitoring import MonitorStateStore, StateBackedMonitorMixin
-from ..presentation.commands import monitor, ops, rank, store
+from ..presentation.commands import achievement_admin, monitor, ops, rank, store
 from ..presentation.renderers.superpower import SuperpowerPicker
 from ..presentation.web.admin_api import WebAdminAPI
 from ..infrastructure.persistence.plugin_data import PersistenceMixin
@@ -52,7 +52,7 @@ class SteamStatusMonitorV3(
             logger.error("当前插件已在运行中。请重启astrbot而非重载插件")
             return
         self._ssm_running = True
-        self._plugin_version = "4.11.2"
+        self._plugin_version = "4.11.3"
         self.context = context
         # 分群管理：所有状态数据均以 group_id 为 key
         self.group_steam_ids = {}         # {group_id: [steamid, ...]}
@@ -96,7 +96,6 @@ class SteamStatusMonitorV3(
             )
         self.achievement_poll_tasks = {}  # {(group_id, sid, gameid): asyncio.Task}
         self.achievement_snapshots = {}   # {(group_id, sid, gameid): [成就列表]}
-        self.achievement_blacklist = set()  # 新增：成就查询黑名单
         self.achievement_fail_count = {}    # 新增：成就查询失败计数
         # --- 新增：重启后自动推送 ---
         self.running_groups = set()  # 正在运行的群号集合
@@ -205,6 +204,12 @@ class SteamStatusMonitorV3(
         # 重置运行标志，允许下次重载正常初始化
         self._ssm_running = False
 
+    @property
+    def achievement_blacklist(self):
+        """只读别名：与 AchievementMonitor 的持久化名单同源，消除双集合不同步。"""
+        monitor = getattr(self, "achievement_monitor", None)
+        return monitor.achievement_blacklist if monitor is not None else set()
+
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("steam on")
     async def steam_on(self, event: AstrMessageEvent):
@@ -232,6 +237,21 @@ class SteamStatusMonitorV3(
     async def steam_blacklist(self, event: AstrMessageEvent, action: str = "", value: str = ""):
         '''强制黑名单：/steam BL [AppID...] 加入并切黑名单；list 查看；del [AppID...] 删除'''
         async for result in ops.blacklist(self, event, action, value):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command(
+        "steam achievement_blacklist",
+        alias={
+            "steam achievement_bl",
+            "steam achbl",
+            "steam ABL",
+            "steam abl",
+        },
+    )
+    async def steam_achievement_blacklist(self, event: AstrMessageEvent, action: str = "", value: str = ""):
+        '''查看/管理成就查询黑名单（AppID/游戏名/时间/原因）；别名 achievement_bl / achbl / ABL / abl'''
+        async for result in achievement_admin.achievement_blacklist(self, event, action, value):
             yield result
 
     @filter.permission_type(filter.PermissionType.MEMBER)

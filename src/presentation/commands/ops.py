@@ -45,6 +45,10 @@ HELP_TEXT = (
     "/steam openbox [SteamID] - 查看指定SteamID的全部信息\n"
     "/steam syncgames [now] - 手动同步本群玩家游戏库（默认仅更新基线，now=立即播报新增）\n"
     "/steam mygames [关键词] - 查询本人绑定的游戏库（数量/最近入库/关键词检索）\n"
+    "/steam achievement_on - 开启本群成就推送\n"
+    "/steam achievement_off - 关闭本群成就推送\n"
+    "/steam achievement_blacklist [list 页码] - 查看成就查询黑名单（AppID/游戏名/时间/原因）\n"
+    "/steam achievement_blacklist del [AppID|all] - 删除黑名单条目 / 清空全部\n"
     "/steam rank - 查看本群今日游戏时长排行榜\n"
     "/steam rank 天数 - 查看本群指定天数排行榜（如 7, 30）\n"
     "/steam allrank - 查看所有群今日排行榜\n"
@@ -300,7 +304,7 @@ async def test_achievement_render(plugin, event, steamid: str, gameid: int, coun
     game_name = await plugin.get_chinese_game_name(gameid)
     group_id = plugin.GROUP_ID or 'default'
     achievements = await plugin.achievement_monitor.get_player_achievements(
-        plugin.API_KEY, group_id, steamid, gameid
+        plugin.API_KEY, group_id, steamid, gameid, game_name=game_name
     )
     if not achievements:
         yield event.plain_result("未获取到任何成就，可能为隐私或无成就。")
@@ -313,7 +317,8 @@ async def test_achievement_render(plugin, event, steamid: str, gameid: int, coun
     font_path = resolve_font_path('NotoSansHans-Regular.otf')
     try:
         img_bytes = await plugin.achievement_monitor.render_achievement_image(
-            details, unlocked, player_name=player_name, font_path=font_path
+            details, unlocked, player_name=player_name, font_path=font_path,
+            steamid=steamid, appid=gameid, group_id=group_id,
         )
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             tmp.write(img_bytes)

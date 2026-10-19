@@ -1,0 +1,185 @@
+"""`/steam achievement_blacklist` 成就查询黑名单管理。"""
+import re
+from datetime import datetime
+
+from ...domain.monitoring.game_filter import parse_appids
+
+PAGE_SIZE = 20
+
+_ABL_TAIL_RE = re.compile(
+    r"^[/.。／]*\s*(?:steam\s+)?"
+    r"(?:achievement_blacklist|achievement_bl|achbl|abl)\b\s*(.*)$",
+    re.IGNORECASE,
+)
+
+_REASON_LABELS = {
+    "no_stats": "无成就统计",
+    "fetch_failed_10x": "当天失败10次",
+    "manual": "手动添加",
+    "legacy": "历史遗留",
+}
+
+_USAGE = (
+    "用法：/steam achievement_blacklist [list [页码]] ｜ "
+    "/steam achievement_blacklist del 730,570 ｜ "
+    "/steam achievement_blacklist del all"
+)
+_HINT = "提示：删除单个用 del <AppID>；清空全部用 del all。"
+
+
+def _event_message_text(event) -> str:
+    raw = getattr(event, "message_str", None)
+    if raw is None:
+        getter = getattr(event, "get_message_str", None)
+        raw = getter() if callable(getter) else ""
+    return str(raw or "").strip()
+
+
+def _args_text(event, action: str = "", value: str = "") -> str:
+    """优先读原始消息尾部，避免框架按声明参数个数静默丢弃 token。"""
+    match = _ABL_TAIL_RE.match(_event_message_text(event))
+    if match:
+        return match.group(1).strip()
+    return " ".join(str(x).strip() for x in (action, value) if str(x).strip())
+
+
+def _reason_label(reason) -> str:
+    key = str(reason or "")
+    return _REASON_LABELS.get(key, key or "未知原因")
+
+
+def _format_time(stamp) -> str:
+    try:
+        value = int(stamp or 0)
+    except (TypeError, ValueError):
+        value = 0
+    if value <= 0:
+        return "时间未知"
+    try:
+        return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M")
+    except (OSError, OverflowError, ValueError):
+        return "时间未知"
+
+
+def _safe_name(name) -> str:
+    text = re.sub(r"\s+", " ", str(name or "")).strip().replace("|", "／")
+    if not text:
+        return "名称未知"
+    return text if len(text) <= 40 else text[:39] + "…"
+
+
+def _purge(plugin, appids) -> None:
+    purge = getattr(plugin, "purge_achievement_runtime_state", None)
+    if callable(purge):
+        purge(appids)
+
+
+def _render_list(monitor, page: int) -> str:
+    entries = monitor.list_entries()
+    if not entries:
+        return "成就黑名单为空。\n" + _USAGE + "\n" + _HINT
+
+    total = len(entries)
+    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(1, min(page, pages))
+    start = (page - 1) * PAGE_SIZE
+
+    lines = [f"成就黑名单（共 {total} 条，第 {page}/{pages} 页）"]
+    for index in range(start, min(start + PAGE_SIZE, total)):
+        appid, meta = entries[index]
+        lines.append(
+            f"{index + 1}. {appid} | {_safe_name(meta.get('game_name'))} | "
+            f"{_format_time(meta.get('added_at'))} | {_reason_label(meta.get('reason'))}"
+        )
+    if pages > 1:
+        next_page = page + 1 if page < pages else 1
+        lines.append(f"翻页：/steam achievement_blacklist list {next_page}")
+    lines.append(_HINT)
+    return "\n".join(lines)
+
+
+async def achievement_blacklist(plugin, event, action: str = "", value: str = ""):
+    '''查看/删除成就查询黑名单；list [页码] / del <AppID...> / del all。'''
+    monitor = getattr(plugin, "achievement_monitor", None)
+    if monitor is None or not hasattr(monitor, "list_entries"):
+        yield event.plain_result("成就黑名单存储不可用。")
+        return
+
+    raw = _args_text(event, action, value)
+    tokens = [token for token in re.split(r"[,，\s]+", raw) if token]
+    verb = tokens[0].lower() if tokens else ""
+
+    # 列表：空 / list / ls / show
+    if not tokens or verb in ("list", "ls", "show"):
+        page = 1
+        if len(tokens) > 1:
+            if not tokens[1].isdigit():
+                yield event.plain_result("页码应为正整数。\n" + _USAGE)
+                return
+            page = int(tokens[1])
+        yield event.plain_result(_render_list(monitor, page))
+        return
+
+    # 删除：del / delete / rm / remove
+    if verb in ("del", "delete", "rm", "remove"):
+        targets = tokens[1:]
+        if not targets:
+            yield event.plain_result(
+                "用法：/steam achievement_blacklist del 730,570 ｜ "
+                "/steam achievement_blacklist del all"
+            )
+            return
+
+        if any(token.lower() == "all" for token in targets):
+            if len(targets) > 1:
+                yield event.plain_result("del all 不能与其他 AppID 同时使用，已取消本次操作。")
+                return
+            appids = [appid for appid, _ in monitor.list_entries()]
+            removed_count = monitor.clear_blacklist()
+            _purge(plugin, appids)
+            if removed_count == 0:
+                yield event.plain_result("成就黑名单已经为空。")
+                return
+            yield event.plain_result(
+                f"已清空成就黑名单，共移除 {removed_count} 条。\n"
+                "相关游戏会在下一次成就查询（通常为下次开始游玩）时重新尝试。"
+            )
+            return
+
+        appids, invalid = parse_appids(" ".join(targets))
+        if invalid:
+            steamids = [t for t in invalid if t.isascii() and t.isdigit() and len(t) == 17]
+            others = [t for t in invalid if t not in steamids]
+            lines = []
+            if others:
+                lines.append(f"无法识别为 AppID：{', '.join(others)}")
+                lines.append("AppID 应为 1–10 位纯数字（如 730）。")
+            if steamids:
+                lines.append(f"{', '.join(steamids)} 是 SteamID64，不是游戏 AppID。")
+                lines.append("请填写商店链接中的 AppID，如 store.steampowered.com/app/730 → 730。")
+            yield event.plain_result("\n".join(lines))
+            return
+        if not appids:
+            yield event.plain_result("没有可处理的 AppID。")
+            return
+
+        removed, missing = monitor.remove_appids(appids)
+        remaining = len(monitor.list_entries())
+        if removed:
+            _purge(plugin, removed)
+        if not removed:
+            yield event.plain_result(
+                f"以下 AppID 不在成就黑名单中：{', '.join(missing)}\n"
+                f"当前共 {remaining} 条。\n" + _HINT
+            )
+            return
+
+        lines = [f"已从成就黑名单删除：{', '.join(removed)}（剩余 {remaining} 条）"]
+        if missing:
+            lines.append(f"不在名单中：{', '.join(missing)}")
+        lines.append("已同步清理失败计数与成就详情缓存；相关游戏会在下次成就查询时重新尝试。")
+        lines.append(_HINT)
+        yield event.plain_result("\n".join(lines))
+        return
+
+    yield event.plain_result("未知子命令。\n" + _USAGE)

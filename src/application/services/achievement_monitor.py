@@ -11,6 +11,11 @@ from ...shared.fonts import load_truetype
 from ...shared.paths import IMAGES_DIR
 from ...shared.logging import logger
 from ...shared.network import aiohttp_connector, httpx_client_kwargs
+from ...infrastructure.persistence.achievement_blacklist_store import (
+    REASON_NO_STATS,
+    SOURCE_AUTO,
+    AchievementBlacklistStore,
+)
 
 
 class AchievementMonitor:
@@ -23,26 +28,35 @@ class AchievementMonitor:
         self.achievements_file = os.path.join(data_dir, "achievements_cache.json")
         self._load_achievements_cache()
         self.details_cache = {}  # (group_id, appid) -> details 缓存
-        self._load_blacklist()
-    
-    def _load_blacklist(self):
-        path = os.path.join(self.data_dir, "achievement_blacklist.json")
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    self.achievement_blacklist = set(json.load(f))
-            except Exception:
-                self.achievement_blacklist = set()
-        else:
-            self.achievement_blacklist = set()
+        self.blacklist_store = AchievementBlacklistStore(data_dir)
+
+    # ---------- 黑名单：唯一事实源为 blacklist_store ----------
+
+    @property
+    def achievement_blacklist(self):
+        """只读兼容：返回当前名单快照；写入请走 add_to_blacklist / remove_appids。"""
+        return set(self.blacklist_store.entries)
+
+    def is_blacklisted(self, appid) -> bool:
+        return self.blacklist_store.contains(appid)
+
+    def add_to_blacklist(self, appid, reason, game_name="", source=SOURCE_AUTO) -> bool:
+        return self.blacklist_store.add(
+            appid, reason=reason, game_name=game_name, source=source
+        )
+
+    def remove_appids(self, appids):
+        return self.blacklist_store.remove(appids)
+
+    def clear_blacklist(self) -> int:
+        return self.blacklist_store.clear()
+
+    def list_entries(self):
+        return self.blacklist_store.items()
 
     def _save_blacklist(self):
-        path = os.path.join(self.data_dir, "achievement_blacklist.json")
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(list(self.achievement_blacklist), f, ensure_ascii=False)
-        except Exception:
-            pass
+        """兼容旧调用点。"""
+        return self.blacklist_store.save()
 
     def is_blacklist_verified(self) -> bool:
         return os.path.exists(os.path.join(self.data_dir, "achievement_blacklist_verified.flag"))
@@ -69,12 +83,14 @@ class AchievementMonitor:
                 pass
 
     async def _verify_blacklist_entries(self):
-        if not self.achievement_blacklist:
+        entries = self.list_entries()
+        if not entries:
             return
         url = f"{self.steam_api_base}/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/"
         removed = []
-        remaining = set()
-        for appid in list(self.achievement_blacklist):
+        for appid, meta in entries:
+            if str(meta.get("source") or "") == "manual":
+                continue  # 手动加入的条目永不被自动校验移除
             keep = True  # 默认保留；只有确认“本身有成就”才移出
             try:
                 async with httpx.AsyncClient(timeout=15, **httpx_client_kwargs(self.proxy)) as client:
@@ -86,14 +102,11 @@ class AchievementMonitor:
                             keep = False  # 游戏本身有成就 → 历史误拉黑
             except Exception:
                 keep = True  # 网络失败：保留，避免误删真正无成就的
-            if keep:
-                remaining.add(appid)
-            else:
+            if not keep:
                 removed.append(appid)
             await asyncio.sleep(0.3)
         if removed:
-            self.achievement_blacklist = remaining
-            self._save_blacklist()
+            self.remove_appids(removed)
             logger.info(f"[成就黑名单校验] 移出 {len(removed)} 个历史误拉黑游戏（本身有成就）: {removed}")
         else:
             logger.info("[成就黑名单校验] 未发现历史误拉黑条目")
@@ -116,7 +129,7 @@ class AchievementMonitor:
         except Exception as e:
             print(f"保存成就缓存失败: {e}")
     
-    async def get_player_achievements(self, api_key: str, group_id: str, steamid: str, appid: int) -> Optional[Set[str]]:
+    async def get_player_achievements(self, api_key: str, group_id: str, steamid: str, appid: int, game_name: str = "") -> Optional[Set[str]]:
         """
         获取指定玩家在指定游戏中的已解锁成就 apiname 集合。
         - 返回 set（可能为空集）= 查询成功（HTTP 200 + success=true，即使 0 解锁/无描述）；
@@ -124,7 +137,7 @@ class AchievementMonitor:
         仅当 HTTP 400 且返回 no stats（游戏本身无成就统计）时才加入黑名单并跳过后续轮询。
         """
         # 黑名单机制
-        if hasattr(self, 'achievement_blacklist') and str(appid) in self.achievement_blacklist:
+        if self.blacklist_store.contains(appid):
             return None
         url = f"{self.steam_api_base}/ISteamUserStats/GetPlayerAchievements/v1/"
         lang_list = ["schinese", "english", "en"]
@@ -179,10 +192,15 @@ class AchievementMonitor:
                 except Exception as e:
                     logger.warning(f"[成就获取] appid={appid} 请求异常: {e} (第{attempt+1}次, lang={lang})")
         if saw_no_stats:
+            name = game_name or self.blacklist_store.name_of(appid)
+            added = self.add_to_blacklist(
+                appid, reason=REASON_NO_STATS, game_name=name, source=SOURCE_AUTO
+            )
             print(f"游戏 {appid} 已加入成就黑名单（无成就统计）")
-            logger.info(f"[成就黑名单] 游戏 {appid} 无成就统计，已加入黑名单并跳过轮询")
-            self.achievement_blacklist.add(str(appid))
-            self._save_blacklist()
+            logger.info(
+                f"[成就黑名单] 游戏 {appid} 无成就统计，已加入黑名单并跳过轮询"
+                f"{'' if added else '（已存在，保留首次记录）'}"
+            )
         return None
 
     async def get_achievement_details(self, group_id: str, appid: int, lang: str = "schinese", api_key: str = "", steamid: str = "") -> Dict[str, Any]:
@@ -192,7 +210,7 @@ class AchievementMonitor:
         若 description 为空，自动尝试多语言
         """
         # 黑名单机制
-        if hasattr(self, 'achievement_blacklist') and str(appid) in self.achievement_blacklist:
+        if self.blacklist_store.contains(appid):
             return {}
         # 优先用缓存
         cache_key = (group_id, appid)
@@ -300,7 +318,9 @@ class AchievementMonitor:
     
     async def check_new_achievements(self, api_key: str, group_id: str, steamid: str, appid: int, player_name: str, game_name: str) -> Set[str]:
         key = (group_id, steamid, appid)
-        current_achievements = await self.get_player_achievements(api_key, group_id, steamid, appid)
+        current_achievements = await self.get_player_achievements(
+            api_key, group_id, steamid, appid, game_name=game_name
+        )
         if current_achievements is None:
             return set()
         initial_achievements = self.initial_achievements.get(str(key), set())
@@ -359,7 +379,7 @@ class AchievementMonitor:
             lines.append(line)
         return lines
 
-    async def render_achievement_image(self, achievement_details: dict, new_achievements: set, player_name: str = "", steamid: str = None, appid: int = None, unlocked_set: set = None, font_path=None) -> bytes:
+    async def render_achievement_image(self, achievement_details: dict, new_achievements: set, player_name: str = "", steamid: str = None, appid: int = None, unlocked_set: set = None, font_path=None, group_id: str = "") -> bytes:
         # 风格化：圆角卡片、icon透明、自动换行、无表情符号、官方风格进度条
         width = 420
         padding_v = 18
@@ -387,7 +407,9 @@ class AchievementMonitor:
         if unlocked_set is None:
             unlocked_set = set()
             if steamid is not None and appid is not None:
-                unlocked_set = await self.get_player_achievements(os.environ.get('STEAM_API_KEY', ''), steamid, appid) or set()
+                unlocked_set = await self.get_player_achievements(
+                    os.environ.get('STEAM_API_KEY', ''), group_id, steamid, appid
+                ) or set()
         unlocked_achievements = len(unlocked_set)
         total_achievements = len(achievement_details)
         progress_percent = int(unlocked_achievements / total_achievements * 100) if total_achievements else 0
