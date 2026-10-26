@@ -76,6 +76,7 @@
 | `enable_user_offline_notify` | 用户下线通知开关（纯文本，附本次在线时长；默认关闭；180 秒防抖） | false |
 | `notify_send_image` | 通知发送图片开关 | true |
 | `notify_send_text` | 通知发送文本开关 | true |
+| `notify_quiet_hours` | 静默时段（免打扰），格式 `起始小时,结束小时`（整点 0–23）；`0,8` = 00:00–07:59，`23,8` = 23:00–次日 07:59，`0,0` 或两值相同 = 关闭；非法值按关闭处理。仅跳过播报，轮询与数据记录照常，命中即丢弃不补发 | `0,0` |
 | `enable_proxy` | 启用网络代理 | false |
 | `proxy_url` | 代理链接（如 `http://127.0.0.1:7890`） | 空 |
 | `font_download_enabled` | 启动后自动下载 CJK 字体包 | true |
@@ -219,12 +220,12 @@ AstrBot 只扫描 `Star` 子类上的命令装饰器，注册桩必须留在插�
 ## 依赖
 - Python 3.7+
 - httpx
-- Pillow
+- Pillow >= 9.5, < 14（与 AstrBot 4.29+ 内置的 Pillow 13 共用同一份，无需降级）
 - AstrBot >= 4.24.2
 
 ### 依赖安装方法
 如果显示缺少依赖，你可以尝试下载以下工具来进行修复
-pip install httpx pillow
+pip install "httpx[socks]" "Pillow>=9.5,<14"
 
 可以添加QQ：1912584909 或加交流群：881855879 来反馈功能和建议 闲聊也欢迎喵~
 
@@ -237,6 +238,11 @@ pip install httpx pillow
 > 如果本项目对您的生活 / 工作产生了帮助，或者您关注本项目的未来发展，请给项目 Star，这是我维护这个开源项目的动力 ❤️。
 
 ## 更新记录
+- V4.11.4（2026/10/26）
+  - **修复 Pillow 版本冲突（Issue #62）**：依赖上界由 `<13` 放宽至 `<14`，兼容 AstrBot 4.29+ 内置的 Pillow 13，不再因「插件要求降级 / 核心保护拦截」安装失败；已用 Pillow 13.0.0 独立目录覆盖验证全部渲染路径。
+  - **新配置 `notify_quiet_hours`（Issue #60）**：静默时段免打扰，格式 `起始小时,结束小时`（整点），支持跨午夜（如 `23,8`）。命中时跳过所有自动播报（开始/结束、上下线、网络波动、新入库、成就、每日排行榜），**轮询与数据统计照常**，且通知直接丢弃、不在静默结束后补发；`0,0` 为关闭（默认）。手动 `/steam rank_on test` 不受影响。
+  - **WebUI**：插件自带设置页新增「静默时段」输入框，保存后即时生效。
+
 - V4.11.3（2026/10/19）
   - **新指令 `/steam achievement_blacklist`（管理员）**：查看成就查询黑名单，逐条显示 AppID、游戏名、加入时间与原因；默认渲染为深色单栏表格图片，一张图输出全部条目，另支持 `list text` 纯文本分页、`names` 批量补全缺失游戏名、按 AppID 删除、`del all` 清空。别名 `achievement_bl` / `achbl` / `ABL` / `abl`。
   - **数据升级**：`achievement_blacklist.json` 升级为 v2（含 game_name / added_at / reason / source），首次启动自动迁移并备份 `.bak-v1`；历史条目如实显示「时间未知 / 历史遗留」，并从 `play_records.json`、`session_records.json` 离线回填游戏名。
