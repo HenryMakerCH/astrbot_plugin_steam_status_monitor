@@ -9,6 +9,7 @@ from astrbot.api.message_components import Plain, Image
 from ...shared.fonts import resolve_font_path
 from ...shared.logging import logger
 from ...shared.utils.notify_session import is_sendable_group_session
+from ...shared.utils.quiet_hours import in_quiet_hours
 from ...presentation.formatters.status import format_play_duration
 from ...presentation.renderers.game_start import render_game_start
 from ...presentation.renderers.game_end import render_game_end
@@ -158,6 +159,13 @@ class NotificationTrackingMixin:
 
     async def _send_merged_notification(self, group_id, notifications):
         if not notifications:
+            return []
+        if in_quiet_hours(getattr(self, "config", {}) or {}):
+            # 静默时段：只跳过播报，不打断轮询/记账；返回空失败列表等于「已消费」，
+            # pending 队列（含 owned_games 持久化队列）不会在静默结束后补发。
+            logger.info(
+                "静默时段跳过播报 (group_id=%s, 共 %s 条)", group_id, len(notifications)
+            )
             return []
         session_notifications = {}
         for notification in notifications:

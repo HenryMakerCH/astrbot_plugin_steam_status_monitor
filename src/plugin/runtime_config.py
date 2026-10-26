@@ -109,6 +109,8 @@ def apply_runtime_config(plugin, config=None):
     plugin.max_achievement_notifications = config.get("max_achievement_notifications", 5)
     plugin.rank_push_hour = config.get("rank_push_hour", 8)
     plugin.rank_push_minute = config.get("rank_push_minute", 30)
+    # 静默时段：旧配置缺键时补默认值，保证闸门与 WebUI 读到一致的字符串
+    config.setdefault("notify_quiet_hours", "0,0")
     ensure_socks_support(plugin.proxy)
     return config
 

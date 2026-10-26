@@ -3,6 +3,7 @@ import time
 from datetime import datetime
 
 from ...shared.logging import logger
+from ...shared.utils.quiet_hours import in_quiet_hours
 
 
 class PollingTrackingMixin:
@@ -50,6 +51,10 @@ class PollingTrackingMixin:
         finally:
             self._startup_stale_groups.clear()
 
+    def _rank_push_allowed(self, now_dt):
+        """每日排行榜自动推送的静默时段闸门（手动 /steam rank_on test 不经过本判定）。"""
+        return not in_quiet_hours(getattr(self, "config", {}) or {}, now=now_dt)
+
     async def global_poll_and_log_loop(self):
         '''全局定时并发查询所有群Steam状态，按动态间隔判断是否需要查询，40秒统一输出日志'''
         while True:
@@ -85,9 +90,13 @@ class PollingTrackingMixin:
                     ranking = getattr(self, "ranking_service", None)
                     push_date_key = ranking.day_key(-1) if ranking is not None else None
                     if push_date_key and self._last_rank_push_date != push_date_key and hasattr(self, 'rank_push_groups') and (self.rank_push_groups or getattr(self, 'rank_push_all', False)):
+                        # 先占位：无论真正推送还是静默丢弃，本日均不再重复判定（丢弃不排队）
                         self._last_rank_push_date = push_date_key
-                        logger.info(f"[排行榜] 开始每日自动推送，时间={push_hour}:{push_minute:02d}，目标群: {self.rank_push_groups if self.rank_push_groups else '全部群(rank_push_all)'}")
-                        asyncio.create_task(self.rank_view.push_daily())
+                        if not self._rank_push_allowed(now_dt):
+                            logger.info(f"[排行榜] 静默时段内，跳过本次自动推送 date={push_date_key}")
+                        else:
+                            logger.info(f"[排行榜] 开始每日自动推送，时间={push_hour}:{push_minute:02d}，目标群: {self.rank_push_groups if self.rank_push_groups else '全部群(rank_push_all)'}")
+                            asyncio.create_task(self.rank_view.push_daily())
                 # 节流保存：本轮有脏数据且超过间隔则落盘，避免每次 check_status_change 都写盘
                 if getattr(self, '_data_dirty', False) and (time.time() - getattr(self, '_last_save_time', 0)) >= getattr(self, '_save_interval', 300):
                     try:

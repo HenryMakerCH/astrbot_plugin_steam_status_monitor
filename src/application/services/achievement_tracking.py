@@ -8,6 +8,7 @@ from astrbot.api.message_components import Image, Plain
 from ...shared.fonts import resolve_font_path
 from ...shared.logging import logger
 from ...shared.utils.notify_session import is_sendable_group_session
+from ...shared.utils.quiet_hours import in_quiet_hours
 from ...infrastructure.persistence.achievement_blacklist_store import (
     REASON_FETCH_FAILED,
     SOURCE_AUTO,
@@ -94,6 +95,14 @@ class AchievementTrackingMixin:
 
     async def notify_new_achievements(self, group_id, steamid, player_name, gameid, game_name, new_achievements):
         if not new_achievements:
+            return True
+        if in_quiet_hours(getattr(self, "config", {}) or {}):
+            # 静默时段：返回 True 表示「已消费」，调用方照常推进 achievement_snapshots，
+            # 静默期间解锁的成就不会在早上补发。
+            logger.info(
+                "静默时段跳过成就播报 (group_id=%s, gameid=%s, %s 项)",
+                group_id, gameid, len(new_achievements),
+            )
             return True
         if not self.group_achievement_enabled.get(group_id, True):
             return True
