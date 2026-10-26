@@ -31,8 +31,20 @@ def test_apply_runtime_config_sets_runtime_fields():
     assert plugin.config["smart_poll_intervals"] == "1,2,3"
     assert plugin.rank_push_hour == 9
     assert plugin.rank_push_minute == 15
+    assert plugin.config["notify_quiet_hours"] == "0,0"
     assert plugin.proxy is None
     client_cls.assert_called_once()
+
+
+def test_apply_runtime_config_keeps_quiet_hours():
+    plugin = SimpleNamespace()
+    config = {"notify_quiet_hours": "23,8"}
+    with patch("src.plugin.runtime_config.configure_tls"), patch(
+        "src.plugin.runtime_config.ITADClient"
+    ), patch("src.plugin.runtime_config.register_sensitive_values"):
+        apply_runtime_config(plugin, config)
+
+    assert plugin.config["notify_quiet_hours"] == "23,8"
 
 
 def test_apply_hot_update_parses_intervals_and_ints():

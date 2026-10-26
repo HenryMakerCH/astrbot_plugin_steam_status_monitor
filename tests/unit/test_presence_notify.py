@@ -10,6 +10,7 @@ from unittest.mock import patch
 from src.domain.monitoring.presence import presence_transition
 from src.presentation.formatters.status import format_play_duration
 from src.shared.utils.notify_session import is_sendable_group_session
+from src.shared.utils.quiet_hours import in_quiet_hours
 from tests.unit.test_status_change_quit import FakePlugin
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -62,6 +63,7 @@ def _load_notification_methods(names):
         "MessageChain": _MessageChain,
         "is_sendable_group_session": is_sendable_group_session,
         "format_play_duration": format_play_duration,
+        "in_quiet_hours": in_quiet_hours,
     }
     exec(compile(ast.fix_missing_locations(module), str(IMPLEMENTATION_PATH), "exec"), namespace)
     return namespace
