@@ -10,7 +10,7 @@ from ...shared.logging import format_exception, logger
 from ...shared.network import httpx_client_kwargs
 from ...shared.utils.price import store_region_candidates
 
-# 成人内容/年龄墙：无 Cookie 时 appdetails 与 appreviews 常返回 success=false。
+# 成人内容/年龄墙：无 Cookie 时 appdetails 常返回 success=false。
 STEAM_STORE_COOKIES = {
     "birthtime": "0",
     "lastagecheckage": "1-0-1970",
@@ -456,7 +456,9 @@ class SteamClientMixin:
         现在一律 302 跳转到商店首页（跟随重定向只会拿到 HTML），故改用 Web API。
         """
         gid = str(appid).strip()
-        if not gid.isdigit():
+        # str.isdigit() 的接受域比 int() 宽（如 "²" 通过 isdigit 但 int() 抛错），
+        # 这里统一按 ASCII 数字收口，避免非法 appid 把异常漏到 gather 之外。
+        if not (gid.isascii() and gid.isdigit()):
             return None
         url = f"{self.STEAM_API_BASE}/IUserReviewsService/GetAppReviews/v1/"
         # 该接口只接受 GET（POST 返回 405）；num_per_page 必须为 1，
@@ -481,13 +483,18 @@ class SteamClientMixin:
             root = body.get("response") if isinstance(body, dict) else None
             summary = root.get("query_summary") if isinstance(root, dict) else None
             if not isinstance(summary, dict):
-                # 下架/非法 appid 返回 HTTP 200 + {"response":{}}，按「暂无评价」降级
-                return {"text": "暂无评价", "percent": None, "total": 0}
+                # 下架/非法 appid 返回 HTTP 200 + {"response":{}}：确实取不到评价数据，
+                # 返回 None 让卡片整体降级，而不是画两行「暂无评价」占位。
+                self._clear_store_error()
+                return None
             total = self._as_int(summary.get("total_reviews"))
             positive = self._as_int(summary.get("total_positive"))
             if total <= 0:
+                # 正常返回但总数为 0：这是「确实没有评价」，与取不到数据区分开
+                self._clear_store_error()
                 return {"text": "暂无评价", "percent": None, "total": 0}
             percent = round(positive * 100 / total)
+            self._clear_store_error()
             return {
                 "text": self._review_label(summary, percent),
                 "percent": percent,
@@ -534,11 +541,21 @@ class SteamClientMixin:
         return _review_label_from_percent(percent)
 
     async def fetch_game_reviews_both(self, appid):
-        """同时获取「全部语言」与「简体中文」两份评价摘要，供卡片并列显示。"""
+        """同时获取「全部语言」与「简体中文」两份评价摘要，供卡片并列显示。
+
+        单侧异常只丢该侧结果，不影响另一侧已取到的摘要。
+        """
         all_review, zh_review = await asyncio.gather(
             self._review_summary(appid, None),
             self._review_summary(appid, "schinese"),
+            return_exceptions=True,
         )
+        if isinstance(all_review, BaseException):
+            logger.warning("获取 Steam 全语言评价失败 (appid=%s): %s", appid, all_review)
+            all_review = None
+        if isinstance(zh_review, BaseException):
+            logger.warning("获取 Steam 中文评价失败 (appid=%s): %s", appid, zh_review)
+            zh_review = None
         return {"all": all_review, "schinese": zh_review}
 
     async def _request_appdetails(self, client, gid, language=None, country=None, timeout=None):
