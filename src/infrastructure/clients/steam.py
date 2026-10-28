@@ -26,6 +26,46 @@ STEAM_STORE_HEADERS = {
     "Accept": "application/json, text/plain, */*",
 }
 
+# Steam EUserReviewScore（GetAppReviews 的 review_score 字段）
+REVIEW_SCORE_LABELS = {
+    1: "差评如潮",
+    2: "特别差评",
+    3: "差评",
+    4: "多半差评",
+    5: "褒贬不一",
+    6: "多半好评",
+    7: "好评",
+    8: "特别好评",
+    9: "好评如潮",
+}
+# review_score 缺失时的英文档位兜底
+REVIEW_SCORE_DESC_LABELS = {
+    "overwhelmingly negative": "差评如潮",
+    "very negative": "特别差评",
+    "negative": "差评",
+    "mostly negative": "多半差评",
+    "mixed": "褒贬不一",
+    "mostly positive": "多半好评",
+    "positive": "好评",
+    "very positive": "特别好评",
+    "overwhelmingly positive": "好评如潮",
+}
+
+
+def _review_label_from_percent(percent):
+    """好评率兜底分档：仅在 review_score 与 review_score_desc 都缺失时使用。"""
+    if percent >= 95:
+        return "好评如潮"
+    if percent >= 80:
+        return "特别好评"
+    if percent >= 70:
+        return "多半好评"
+    if percent >= 40:
+        return "褒贬不一"
+    if percent >= 20:
+        return "多半差评"
+    return "差评"
+
 
 def steam_store_client_kwargs(proxy=None):
     """商店接口共用代理、年龄墙 Cookie 与浏览器头。"""
@@ -407,39 +447,52 @@ class SteamClientMixin:
             return None
 
     async def _review_summary(self, appid, language="all"):
-        """获取 Steam 商店评价摘要。language 传 'all' 表示所有语言（缺省），否则为指定语言。
-        返回 {"text","percent","total"} 或 None。"""
+        """获取 Steam 评价摘要（IUserReviewsService/GetAppReviews v1）。
+
+        language 传 'all' 表示所有语言（缺省），否则为指定语言。
+        返回 {"text","percent","total"} 或 None。
+
+        旧接口 store.steampowered.com/appreviews/<appid>?json=1 已被 Steam 标记废弃，
+        现在一律 302 跳转到商店首页（跟随重定向只会拿到 HTML），故改用 Web API。
+        """
         gid = str(appid).strip()
         if not gid.isdigit():
             return None
-        url = f"{self.STEAM_STORE_BASE}/appreviews/{gid}"
-        params = {"json": 1, "filter": "summary"}
-        language = language or "all"
-        params["language"] = language
+        url = f"{self.STEAM_API_BASE}/IUserReviewsService/GetAppReviews/v1/"
+        # 该接口只接受 GET（POST 返回 405）；num_per_page 必须为 1，
+        # 传 0 会把整页评价正文一并带回来。
+        params = {
+            "input_json": json.dumps(
+                {
+                    "appid": int(gid),
+                    "languages": self._review_languages(language),
+                    "review_type": 0,
+                    "num_per_page": 1,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        }
         client, owned = await _get_steam_store_client(self)
         try:
             response = await client.get(url, params=params)
             response.raise_for_status()
-            payload = response.json()
-            summary = payload.get("query_summary") or payload.get("querySummary") or {}
-            total = int(summary.get("total_reviews") or summary.get("totalReviews") or 0)
-            positive = int(summary.get("total_positive") or summary.get("totalPositive") or 0)
+            body = response.json()
+            root = body.get("response") if isinstance(body, dict) else None
+            summary = root.get("query_summary") if isinstance(root, dict) else None
+            if not isinstance(summary, dict):
+                # 下架/非法 appid 返回 HTTP 200 + {"response":{}}，按「暂无评价」降级
+                return {"text": "暂无评价", "percent": None, "total": 0}
+            total = self._as_int(summary.get("total_reviews"))
+            positive = self._as_int(summary.get("total_positive"))
             if total <= 0:
                 return {"text": "暂无评价", "percent": None, "total": 0}
             percent = round(positive * 100 / total)
-            if percent >= 95:
-                label = "好评如潮"
-            elif percent >= 80:
-                label = "特别好评"
-            elif percent >= 70:
-                label = "多半好评"
-            elif percent >= 40:
-                label = "褒贬不一"
-            elif percent >= 20:
-                label = "多半差评"
-            else:
-                label = "差评"
-            return {"text": label, "percent": percent, "total": total}
+            return {
+                "text": self._review_label(summary, percent),
+                "percent": percent,
+                "total": total,
+            }
         except Exception as exc:
             error = self._remember_store_error(classify_steam_store_error(exc))
             logger.warning(
@@ -453,6 +506,32 @@ class SteamClientMixin:
         finally:
             if owned:
                 await client.aclose()
+
+    @staticmethod
+    def _review_languages(language):
+        """旧 language 参数 → GetAppReviews 的 languages 数组。"""
+        value = str(language or "all").strip()
+        return [value or "all"]
+
+    @staticmethod
+    def _as_int(value):
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _review_label(cls, summary, percent):
+        """优先取 Steam 官方评分档位（加权口径，与商店页文案一致），缺失时回落好评率阈值。"""
+        score = cls._as_int(summary.get("review_score"))
+        label = REVIEW_SCORE_LABELS.get(score)
+        if label:
+            return label
+        desc = str(summary.get("review_score_desc") or "").strip().lower()
+        label = REVIEW_SCORE_DESC_LABELS.get(desc)
+        if label:
+            return label
+        return _review_label_from_percent(percent)
 
     async def fetch_game_reviews_both(self, appid):
         """同时获取「全部语言」与「简体中文」两份评价摘要，供卡片并列显示。"""

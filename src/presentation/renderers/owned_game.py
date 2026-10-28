@@ -51,9 +51,11 @@ def _review_color(text):
         return (129, 173, 81)
     if text in ("特别好评", "多半好评"):
         return (130, 200, 90)
+    if text == "好评":
+        return (150, 205, 95)
     if text == "褒贬不一":
         return (222, 180, 60)
-    if text == "多半差评":
+    if text in ("多半差评", "特别差评"):
         return (225, 120, 70)
     if text in ("差评", "差评如潮"):
         return (225, 80, 80)

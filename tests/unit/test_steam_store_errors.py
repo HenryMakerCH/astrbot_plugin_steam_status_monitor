@@ -12,8 +12,10 @@ class FakeSteam(SteamClientMixin):
     def __init__(self):
         self.proxy = None
         self.STEAM_STORE_BASE = "https://store.steampowered.com"
+        self.STEAM_API_BASE = "https://api.steampowered.com"
         self._steam_store_http_client = None
         self._steam_store_http_client_loop = None
+        self.last_store_error = None
 
 
 class _FakeResponse:
@@ -57,7 +59,7 @@ class _ScriptedClient:
     async def get(self, url, params=None, timeout=None):
         params = params or {}
         region = str(params.get("cc") or "").upper()
-        _ScriptedClient.calls.append((url, params.get("cc"), params.get("l"), params.get("language")))
+        _ScriptedClient.calls.append((url, params, params.get("cc"), params.get("l"), params.get("language")))
         if _ScriptedClient.scripted_regions and region not in _ScriptedClient.scripted_regions:
             raise httpx.ConnectError("unscripted region")
         if not _ScriptedClient.responses:
@@ -211,7 +213,9 @@ class SteamStoreStructuredErrorTests(unittest.IsolatedAsyncioTestCase):
         _ScriptedClient.responses = [
             httpx.ReadTimeout("reviews"),
             _FakeResponse({
-                "query_summary": {"total_reviews": 10, "total_positive": 9},
+                "response": {
+                    "query_summary": {"total_reviews": 10, "total_positive": 9},
+                },
             }),
         ]
         client = FakeSteam()
@@ -221,3 +225,130 @@ class SteamStoreStructuredErrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(reviews["all"])
         self.assertEqual("特别好评", reviews["schinese"]["text"])
         self.assertEqual("TIMEOUT", client.last_store_error.code)
+
+
+class SteamReviewMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """issue #65：评价摘要迁移到 IUserReviewsService/GetAppReviews v1。"""
+
+    def setUp(self):
+        _ScriptedClient.responses = []
+        _ScriptedClient.calls = []
+        _ScriptedClient.scripted_regions = None
+
+    @staticmethod
+    def _reviews_payload(**summary):
+        return _FakeResponse({"response": {"query_summary": summary}})
+
+    async def test_uses_getappreviews_endpoint_with_get_only(self):
+        _ScriptedClient.responses = [
+            self._reviews_payload(
+                review_score=9, review_score_desc="Overwhelmingly Positive",
+                total_positive=102003, total_negative=3415, total_reviews=105418,
+            )
+        ]
+        client = FakeSteam()
+        with patch("src.infrastructure.clients.steam.httpx.AsyncClient", _ScriptedClient):
+            result = await client._review_summary("238320", None)
+
+        url, _params, _region, _lang, _language = _ScriptedClient.calls[0]
+        self.assertIn("IUserReviewsService/GetAppReviews/v1/", url)
+        self.assertNotIn("appreviews", url)
+        self.assertEqual("好评如潮", result["text"])
+        self.assertEqual(97, result["percent"])
+        self.assertEqual(105418, result["total"])
+
+    async def test_language_argument_maps_to_languages_array(self):
+        _ScriptedClient.responses = [
+            self._reviews_payload(total_reviews=10, total_positive=9),
+            self._reviews_payload(total_reviews=10, total_positive=9),
+        ]
+        client = FakeSteam()
+        with patch("src.infrastructure.clients.steam.httpx.AsyncClient", _ScriptedClient):
+            await client._review_summary("238320", None)
+            await client._review_summary("238320", "schinese")
+
+        first = json.loads(_ScriptedClient.calls[0][1]["input_json"])
+        second = json.loads(_ScriptedClient.calls[1][1]["input_json"])
+        self.assertEqual(["all"], first["languages"])
+        self.assertEqual(["schinese"], second["languages"])
+        self.assertEqual(1, first["num_per_page"])
+        self.assertEqual(0, first["review_type"])
+
+    async def test_review_score_desc_drives_chinese_label(self):
+        cases = [
+            (9, "Overwhelmingly Positive", "好评如潮"),
+            (8, "Very Positive", "特别好评"),
+            (7, "Positive", "好评"),
+            (6, "Mostly Positive", "多半好评"),
+            (5, "Mixed", "褒贬不一"),
+            (4, "Mostly Negative", "多半差评"),
+            (3, "Negative", "差评"),
+            (2, "Very Negative", "特别差评"),
+            (1, "Overwhelmingly Negative", "差评如潮"),
+        ]
+        client = FakeSteam()
+        for score, desc, expected in cases:
+            _ScriptedClient.responses = [
+                self._reviews_payload(
+                    review_score=score, review_score_desc=desc,
+                    total_positive=5, total_negative=5, total_reviews=10,
+                )
+            ]
+            with patch("src.infrastructure.clients.steam.httpx.AsyncClient", _ScriptedClient):
+                result = await client._review_summary("570", None)
+            self.assertEqual(expected, result["text"], msg=f"score={score}")
+
+    async def test_percent_is_fallback_when_score_missing(self):
+        _ScriptedClient.responses = [
+            self._reviews_payload(total_reviews=100, total_positive=82)
+        ]
+        client = FakeSteam()
+        with patch("src.infrastructure.clients.steam.httpx.AsyncClient", _ScriptedClient):
+            result = await client._review_summary("570", None)
+
+        self.assertEqual("特别好评", result["text"])
+        self.assertEqual(82, result["percent"])
+
+    async def test_empty_response_becomes_no_reviews_not_error(self):
+        _ScriptedClient.responses = [_FakeResponse({"response": {}})]
+        client = FakeSteam()
+        with patch("src.infrastructure.clients.steam.httpx.AsyncClient", _ScriptedClient):
+            result = await client._review_summary("999999999", None)
+
+        self.assertEqual({"text": "暂无评价", "percent": None, "total": 0}, result)
+        self.assertIsNone(client.last_store_error)
+
+    async def test_zero_total_becomes_no_reviews(self):
+        _ScriptedClient.responses = [
+            self._reviews_payload(total_reviews=0, total_positive=0)
+        ]
+        client = FakeSteam()
+        with patch("src.infrastructure.clients.steam.httpx.AsyncClient", _ScriptedClient):
+            result = await client._review_summary("570", None)
+
+        self.assertEqual("暂无评价", result["text"])
+        self.assertIsNone(result["percent"])
+
+    async def test_rate_limit_is_classified(self):
+        request = httpx.Request("GET", "https://api.steampowered.com")
+        _ScriptedClient.responses = [
+            _FakeResponse(
+                {"response": {}},
+                status_code=429,
+            )
+        ]
+        client = FakeSteam()
+        with patch("src.infrastructure.clients.steam.httpx.AsyncClient", _ScriptedClient):
+            result = await client._review_summary("570", None)
+
+        self.assertIsNone(result)
+        self.assertEqual("RATE_LIMITED", client.last_store_error.code)
+        self.assertTrue(client.last_store_error.retryable)
+
+    async def test_non_numeric_appid_skips_request(self):
+        client = FakeSteam()
+        with patch("src.infrastructure.clients.steam.httpx.AsyncClient", _ScriptedClient):
+            result = await client._review_summary("abc", None)
+
+        self.assertIsNone(result)
+        self.assertEqual([], _ScriptedClient.calls)
