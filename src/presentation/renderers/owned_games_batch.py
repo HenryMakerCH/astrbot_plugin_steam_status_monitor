@@ -332,9 +332,13 @@ async def render_owned_games_batch(
     steam_api_base=None,
     proxy=None,
     version=None,
+    page_size=0,
     cover_concurrency=DEFAULT_COVER_CONCURRENCY,
 ):
-    """异步入口：并发取头像/头像框/本页封面后绘制，返回 PNG bytes。"""
+    """异步入口：并发取头像/头像框/本页封面后绘制，返回 PNG bytes。
+
+    page_size 用于推算本页起始序号（跨页连续编号）；不传则按本页行数推算。
+    """
     entries = [item if isinstance(item, dict) else {} for item in (items or [])]
     if added_count is None:
         added_count = len(entries)
@@ -379,6 +383,17 @@ async def render_owned_games_batch(
             continue
         covers.append(_open_or_none(value))
 
+    # 序号跨页连续：按每页容量推算本页起始序号，末页只有 partial 行也不会错位。
+    # 调用方不传 page_size 时退化为「按本页行数推算」，仍优于每页从 #1 重来。
+    per_page = len(entries)
+    try:
+        declared = int(page_size or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    if declared > 0:
+        per_page = declared
+    start_index = (max(1, int(page or 1)) - 1) * max(1, per_page) + 1
+
     image = render_owned_games_batch_image(
         player_name,
         entries,
@@ -390,6 +405,7 @@ async def render_owned_games_batch(
         avatar=_open_or_none(avatar_value),
         avatar_frame=_open_or_none(frame_value),
         covers=covers,
+        start_index=start_index,
         version=version,
     )
     output = io.BytesIO()

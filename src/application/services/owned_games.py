@@ -465,7 +465,11 @@ class OwnedGamesService:
         chunks = paginate_compact_entries(
             entries, self._compact_page_size(), self._compact_max_pages()
         )
-        pages = len(chunks)
+        page_size = self._compact_page_size()
+        # pages 表示「本轮新增的真实总页数」，不受 max_pages 截断影响，
+        # 这样页码显示的是真实进度，而不是被截断后的名义页数。
+        pages = max(1, -(-len(entries) // page_size))
+        shown = sum(len(chunk) for chunk in chunks)
         group_ids = [str(group_id) for group_id in groups]
         items = []
         for page, chunk in enumerate(chunks, start=1):
@@ -477,6 +481,8 @@ class OwnedGamesService:
                 "page": page,
                 "pages": pages,
                 "added_count": len(entries),
+                "shown_count": shown,
+                "page_size": page_size,
                 "groups": list(group_ids),
                 "deliveries": [],
                 "items": chunk,
@@ -534,6 +540,8 @@ class OwnedGamesService:
                 "page": max(1, int(item.get("page") or 1)),
                 "pages": max(1, int(item.get("pages") or 1)),
                 "added_count": max(0, int(item.get("added_count") or 0)),
+                "shown_count": max(0, int(item.get("shown_count") or 0)),
+                "page_size": max(0, int(item.get("page_size") or 0)),
                 "items": [
                     {"appid": str(entry.get("appid")), "name": str(entry.get("name") or "")}
                     for entry in (item.get("items") or [])

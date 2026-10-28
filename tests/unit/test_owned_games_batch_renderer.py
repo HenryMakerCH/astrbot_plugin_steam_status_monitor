@@ -31,10 +31,27 @@ class BatchImageGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(eight.size[1], 728, delta=6)
 
     def test_long_name_does_not_wrap_to_two_lines(self):
+        """长名必须单行省略。
+
+        直接对比「短名」与「超长名」在名称带区域的像素分布：若长名换行，
+        名称带下方（appid 行上沿之前的空隙）会出现明显增多的文字像素。
+        """
         long_name = "超长游戏名称测试" * 10
-        short = render_owned_games_batch_image("玩家", [{"appid": "1", "name": "短名"}])
-        long_one = render_owned_games_batch_image("玩家", [{"appid": "1", "name": long_name}])
-        self.assertEqual(short.size[1], long_one.size[1])
+        short_img = render_owned_games_batch_image("玩家", [{"appid": "1", "name": "短名"}])
+        long_img = render_owned_games_batch_image("玩家", [{"appid": "1", "name": long_name}])
+        self.assertEqual(short_img.size[1], long_img.size[1])
+
+        # 名称单行的字高约 17px，起点 row_top+12（rows_top = 22+76+16 = 114）
+        # 若换行，第二行会挤进 row_top+34 之后、appid 行之前。
+        def ink_in_gap(image):
+            region = image.convert("RGB").crop((146, 114 + 34, 700, 114 + 46))
+            return sum(1 for pixel in region.getdata() if max(pixel) > 150)
+
+        self.assertLess(
+            ink_in_gap(long_img), 20,
+            msg="名称带下方空隙出现文字像素，说明长名被换行而非单行截断",
+        )
+        self.assertLessEqual(ink_in_gap(short_img), ink_in_gap(long_img) + 20)
 
     def test_covers_none_and_empty_entries_render(self):
         for covers in (None, [None] * 4, []):

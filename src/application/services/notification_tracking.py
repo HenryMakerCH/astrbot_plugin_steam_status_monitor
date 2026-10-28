@@ -88,6 +88,7 @@ class NotificationTrackingMixin:
                     owned_count=noti.get("owned_count") or 0,
                     added_count=noti.get("added_count") or 0,
                     added_at=noti.get("added_at"),
+                    page_size=noti.get("page_size") or 0,
                     api_key=self.API_KEY, sgdb_api_key=self.SGDB_API_KEY,
                     sgdb_api_base=self.SGDB_API_BASE, steam_store_base=self.STEAM_STORE_BASE,
                     steam_api_base=self.STEAM_API_BASE, proxy=self.proxy,
@@ -247,11 +248,14 @@ class NotificationTrackingMixin:
                     )
                 elif notification["type"] == "owned_batch":
                     count = notification.get("added_count") or len(notification.get("items") or [])
+                    page = notification.get("page") or 1
+                    pages = notification.get("pages") or 1
                     line = (
                         f"📚【{notification['name']}】新入库 {count} 款"
-                        f"（当前共 {notification.get('owned_count') or 0} 款）"
-                        f" 第 {notification.get('page') or 1}/{notification.get('pages') or 1} 页\n"
+                        f"（当前共 {notification.get('owned_count') or 0} 款）\n"
                     )
+                    if page == 1:
+                        line += f"第 {page}/{pages} 页\n"
                 elif notification["type"] == "online":
                     line = f"🔵【{notification['name']}】已上线\n"
                 elif notification["type"] == "offline":

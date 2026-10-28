@@ -154,6 +154,8 @@ class OwnedGamesStore:
                 "page": max(1, int(item.get("page") or 1)),
                 "pages": max(1, int(item.get("pages") or 1)),
                 "added_count": max(0, int(item.get("added_count") or 0)),
+                "shown_count": max(0, int(item.get("shown_count") or 0)),
+                "page_size": max(0, int(item.get("page_size") or 0)),
                 "groups": [str(g) for g in (item.get("groups") or [])],
                 "deliveries": [],
                 "items": normalized_items,

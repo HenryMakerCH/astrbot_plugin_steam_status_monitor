@@ -182,6 +182,58 @@ class CompactFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, delivered)
         self.assertEqual([], self.service.players[SID]["pending"])
 
+    async def test_compact_pages_agree_on_totals(self):
+        """页码与计数必须自洽：pages 是真实总页数，不受 max_pages 截断影响。"""
+        self.plugin.config["owned_games_compact_page_size"] = 2
+        self.plugin.config["owned_games_compact_max_pages"] = 2
+        self.plugin.fetch_queue = [games(1), games(*range(1, 12))]  # 新增 10 款
+
+        await self.service.sync_all(baseline_only=True)
+        await self.service.sync_all()
+
+        notis = self._notis()
+        self.assertEqual(2, len(notis))  # 只发 2 页
+        self.assertEqual({5}, {n["pages"] for n in notis})  # 但真实共 5 页
+        self.assertEqual({10}, {n["added_count"] for n in notis})
+        self.assertEqual({4}, {n["shown_count"] for n in notis})  # 实际展示 4 款
+        self.assertEqual({2}, {n["page_size"] for n in notis})
+
+    async def test_batch_noti_carries_page_size_for_numbering(self):
+        """渲染器靠 page_size 推算跨页连续序号，必须随 noti 透传。"""
+        self.plugin.config["owned_games_compact_page_size"] = 8
+        self.plugin.fetch_queue = [games(1), games(*range(1, 19))]
+
+        await self.service.sync_all(baseline_only=True)
+        await self.service.sync_all()
+
+        for noti in self._notis():
+            self.assertEqual(8, noti["page_size"])
+
+    async def test_batch_page_size_survives_persistence(self):
+        self.plugin.config["owned_games_compact_page_size"] = 3
+        self.plugin.fetch_queue = [games(1), games(*range(1, 9))]
+        await self.service.sync_all(baseline_only=True)
+
+        original = self.plugin._send_merged_notification
+
+        async def always_fail(group_id, notifications):
+            self.plugin.sent.append((str(group_id), [dict(n) for n in notifications]))
+            return [dict(n, _target_session=f"session:{group_id}") for n in notifications]
+
+        self.plugin._send_merged_notification = always_fail
+        await self.service.sync_all()
+        self.plugin._send_merged_notification = original
+
+        self.service.store.flush()
+        from src.infrastructure.persistence.owned_games_store import OwnedGamesStore
+        reloaded = OwnedGamesStore(self.service.store.data_dir)
+        pending = reloaded.players[SID]["pending"]
+        self.assertTrue(pending)
+        for item in pending:
+            self.assertEqual("owned_batch", item["kind"])
+            self.assertGreater(item["page_size"], 0)
+            self.assertGreater(item["pages"], 0)
+
     async def test_detailed_style_keeps_render_flag_semantics(self):
         self.plugin.config["owned_games_notify_style"] = "detailed"
         self.plugin.config["owned_games_max_per_notify"] = 1
