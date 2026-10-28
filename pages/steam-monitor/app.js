@@ -145,7 +145,7 @@ async function loadDashboardCharts(){
   const gc=initChart("chart-top-games");if(!gc)return;
   const cols=["#5aa9d6","#b2d430","#e8a030","#b37cd4","#e05050","#50c8c8","#ff8c60","#60b0e0","#e0a0c0","#80d080"];
   gc.setOption({...steamTheme(),tooltip:{trigger:"item",backgroundColor:"#1e2c38",borderColor:"#2e4254",borderWidth:1,extraCssText:"border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.5)",formatter:p=>{
-    const det=details[p.data.gameid];if(!det||!det.players)return`<b>${escapeHtml(p.name)}</b><br/>${p.value}分钟`;
+    const det=details[p.data.gameid];if(!det||!det.players)return`<b>${escapeHtml(p.name)}</b><br/>${formatDuration(p.value)}`;
     const cover=covers[p.data.gameid]||"";
     let h=`<div style="min-width:200px;max-width:260px"><b style="font-size:14px">${escapeHtml(det.name)}</b>${cover?`<img src="${safeImageUrl(cover)}" style="width:100%;max-width:240px;border-radius:6px;margin:8px 0;display:block">`:""}`;
     det.players.slice(0,5).forEach(pl=>{h+=`<div style="display:flex;justify-content:space-between;font-size:12px;margin:3px 0"><span>${escapeHtml(pl.name)}</span><span style="color:var(--accent)">${(pl.minutes/60).toFixed(1)}h</span></div>`});
@@ -156,6 +156,11 @@ async function loadDashboardCharts(){
 // ====== Gantt ======
 const GC=["#5aa9d6","#b2d430","#e8a030","#b37cd4","#e05050","#50c8c8","#ff8c60","#60b0e0","#e0a0c0","#80d080","#d0b060","#90c0f0"];
 function gch(gid){let h=0;for(let i=0;i<gid.length;i++)h=((h<<5)-h)+gid.charCodeAt(i);return GC[Math.abs(h)%GC.length]}
+let ganttState={days:1,offset:0,activeGames:new Set(),sessions:[],players:[],timeRange:{}};
+function ganttWeekday(d){return["周日","周一","周二","周三","周四","周五","周六"][d.getDay()]}
+function ganttDateText(d){return`${d.getMonth()+1}/${d.getDate()}`}
+function ganttClock(ts){const d=new Date(ts);return`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`}
+function ganttParse(value){if(!value)return null;const d=new Date(String(value).replace(" ","T"));return isNaN(d.getTime())?null:d}
 async function renderGantt(){
   const c=document.getElementById("content");
   c.innerHTML=`<div class="flex-between mb-20"><h2 class="page-title">甘特图</h2>
@@ -163,33 +168,121 @@ async function renderGantt(){
       <button class="tab-btn active" data-d="1" data-o="0">今天</button><button class="tab-btn" data-d="1" data-o="-1">昨天</button>
       <button class="tab-btn" data-d="7" data-o="0">近7天</button><button class="tab-btn" data-d="30" data-o="0">近30天</button>
     </div></div>
-    <div class="card"><div id="gantt-chart" class="gantt-container"></div></div>
-    <div id="gantt-legend" style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px"></div>`;
+    <div class="card gantt-card"><div class="gantt-meta" id="gantt-meta">正在统计…</div><div id="gantt-chart" class="gantt-container"></div></div>
+    <div id="gantt-legend" class="gantt-legend"></div>`;
+  ganttState={days:1,offset:0,activeGames:new Set(),sessions:[],players:[],timeRange:{}};
   await loadGantt(1,0);
-  document.querySelectorAll("#gantt-tabs .tab-btn").forEach(btn=>{btn.addEventListener("click",async()=>{document.querySelectorAll("#gantt-tabs .tab-btn").forEach(b=>b.classList.remove("active"));btn.classList.add("active");await loadGantt(parseInt(btn.dataset.d),parseInt(btn.dataset.o))})});
+  document.querySelectorAll("#gantt-tabs .tab-btn").forEach(btn=>{btn.addEventListener("click",async()=>{document.querySelectorAll("#gantt-tabs .tab-btn").forEach(b=>b.classList.remove("active"));btn.classList.add("active");ganttState.activeGames=new Set();await loadGantt(parseInt(btn.dataset.d),parseInt(btn.dataset.o))})});
 }
 async function loadGantt(days,offset){
+  ganttState.days=days;ganttState.offset=offset;
   const data=await API.get(`/api/gantt/data?days=${days}&offset=${offset}`);
-  const players=data.players||[];
-  const gs={};players.forEach(p=>(p.sessions||[]).forEach(s=>{gs[s.gameid]=s.game_name}));
-  const leg=document.getElementById("gantt-legend");
-  leg.innerHTML=Object.keys(gs).map(gid=>`<span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary)"><span style="width:12px;height:12px;border-radius:2px;background:${gch(gid)};display:inline-block"></span>${escapeHtml(gs[gid])}</span>`).join("");
+  const players=data.players||[];const sessions=[];
+  players.forEach((p,pi)=>(p.sessions||[]).forEach(s=>{if(s.start>0&&s.end>0)sessions.push({pi,player:p.name,start:Number(s.start),end:Number(s.end),gameid:String(s.gameid||""),game_name:s.game_name||s.gameid||"未知游戏",duration_min:Number(s.duration_min||0)})}));
+  ganttState.players=players;ganttState.sessions=sessions;ganttState.timeRange=data.time_range||{};
+  const totalMinutes=sessions.reduce((sum,s)=>sum+s.duration_min,0);
+  const meta=document.getElementById("gantt-meta");const tr=ganttState.timeRange;
+  if(meta)meta.textContent=sessions.length?`${tr.start||""} – ${tr.end||""} · ${players.length} 位玩家 · ${sessions.length} 段会话 · 合计 ${formatDuration(totalMinutes)}`:"暂无会话记录";
+  ganttBuildLegend();
   const chart=initChart("gantt-chart");if(!chart)return;
-  if(!players.length){chart.clear();leg.innerHTML='<span style="color:var(--text-muted)">暂无记录</span>';return}
-  const names=players.map(p=>p.name);const sd=[];
-  players.forEach((p,pi)=>(p.sessions||[]).forEach(s=>{if(s.start>0&&s.end>0)sd.push({name:p.name,value:[pi,new Date(s.start*1000),new Date(s.end*1000)],game_name:s.game_name,duration_min:s.duration_min,gameid:s.gameid,itemStyle:{color:gch(s.gameid)}})}));
-  if(!sd.length){chart.clear();return}
-  const mT=data.time_range?new Date(data.time_range.start):new Date();const xT=data.time_range?new Date(data.time_range.end):new Date();
-  chart.setOption({...steamTheme(),tooltip:{formatter:p=>{const sd=new Date(p.data.value[1]).toTimeString().slice(0,5);const ed=new Date(p.data.value[2]).toTimeString().slice(0,5);return`<b>${escapeHtml(p.name)}</b> - ${escapeHtml(p.data.game_name)}<br/>${sd} → ${ed}<br/>时长: ${p.data.duration_min}分钟`}},grid:{left:140,right:30,top:20,bottom:50},
-    xAxis:{type:"time",min:mT,max:xT,axisLabel:{color:"#aeb9c2",formatter:v=>{const d=new Date(v);return`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`}},splitLine:{show:true,lineStyle:{color:"rgba(255,255,255,0.06)",type:"dashed"}}},
-    yAxis:{type:"category",data:names,axisLabel:{color:"#e1e8ed",width:120,overflow:"truncate"}},
-    series:[{type:"custom",renderItem:(p,api)=>{const ci=api.value(0);const s=api.coord([api.value(1),ci]);const e=api.coord([api.value(2),ci]);return{type:"rect",shape:{x:s[0],y:s[1]-11,width:Math.max(e[0]-s[0],4),height:22},style:{fill:api.style().fill,opacity:0.85}}},encode:{x:[1,2],y:0},data:sd}],
-    dataZoom:[{type:"slider",start:0,end:100,height:22,bottom:12,textStyle:{color:"#aeb9c2"}}]});
+  if(!sessions.length){chart.clear();return}
+  ganttDraw(chart);
+}
+function ganttBuildLegend(){
+  const leg=document.getElementById("gantt-legend");if(!leg)return;
+  const totals={};
+  ganttState.sessions.forEach(s=>{if(!s.gameid)return;if(!totals[s.gameid])totals[s.gameid]={name:s.game_name,minutes:0};totals[s.gameid].minutes+=s.duration_min});
+  const list=Object.entries(totals).sort((a,b)=>b[1].minutes-a[1].minutes);
+  const top=list.slice(0,10),rest=list.slice(10);
+  const chips=top.map(([gid,item])=>`<button class="gantt-chip" data-gids="${escapeAttr(gid)}" type="button"><i style="background:${gch(gid)}"></i><span>${escapeHtml(item.name)}</span><em>${formatDuration(item.minutes)}</em></button>`);
+  if(rest.length){const gids=rest.map(([gid])=>gid).join(",");const minutes=rest.reduce((sum,[,item])=>sum+item.minutes,0);chips.push(`<button class="gantt-chip is-other" data-gids="${escapeAttr(gids)}" type="button"><i style="background:#6b7683"></i><span>其他 ${rest.length} 款</span><em>${formatDuration(minutes)}</em></button>`)}
+  leg.innerHTML=chips.length?chips.join(""):'<span style="color:var(--text-muted);font-size:12px">暂无记录</span>';
+  leg.querySelectorAll(".gantt-chip").forEach(chip=>chip.addEventListener("click",()=>{
+    const gids=(chip.dataset.gids||"").split(",").filter(Boolean);
+    const active=gids.length&&gids.every(gid=>ganttState.activeGames.has(gid));
+    gids.forEach(gid=>{if(active)ganttState.activeGames.delete(gid);else ganttState.activeGames.add(gid)});
+    ganttApplyFilter();
+  }));
+}
+function ganttApplyFilter(){
+  const leg=document.getElementById("gantt-legend");
+  if(leg)leg.querySelectorAll(".gantt-chip").forEach(chip=>{
+    const gids=(chip.dataset.gids||"").split(",").filter(Boolean);
+    const active=gids.length&&gids.every(gid=>ganttState.activeGames.has(gid));
+    chip.classList.toggle("is-active",active);
+    chip.classList.toggle("is-dim",ganttState.activeGames.size>0&&!active);
+  });
+  const chart=echarts.getInstanceByDom(document.getElementById("gantt-chart"));
+  if(chart)ganttDraw(chart);
+}
+function ganttDraw(chart){
+  const sessions=ganttState.sessions||[],players=ganttState.players||[];
+  if(!sessions.length){chart.clear();return}
+  const tr=ganttState.timeRange||{};
+  let start=ganttParse(tr.start),end=ganttParse(tr.end);
+  if(!start)start=new Date(Math.min(...sessions.map(s=>s.start))*1000);
+  if(!end)end=new Date(Math.max(...sessions.map(s=>s.end))*1000);
+  const axisStart=new Date(start.getFullYear(),start.getMonth(),start.getDate());
+  const axisStartMs=axisStart.getTime(),axisEndMs=end.getTime();
+  const spanMs=Math.max(axisEndMs-axisStartMs,3600000);
+  const shortSpan=spanMs<=8*86400000;
+  const active=ganttState.activeGames;const todayKey=new Date().toDateString();
+  const dayStarts=[];
+  for(let cursor=new Date(axisStart);cursor<end;cursor=new Date(cursor.getFullYear(),cursor.getMonth(),cursor.getDate()+1))dayStarts.push(new Date(cursor));
+  const bands=dayStarts.map((d,i)=>{
+    const next=new Date(d.getFullYear(),d.getMonth(),d.getDate()+1);
+    const isToday=d.toDateString()===todayKey;
+    const color=isToday?"rgba(102,217,139,0.06)":(i%2===0?"rgba(255,255,255,0.018)":"rgba(255,255,255,0)");
+    return[{xAxis:d.getTime(),itemStyle:{color}},{xAxis:Math.min(next.getTime(),axisEndMs)}];
+  });
+  const marks=dayStarts.slice(1).map(d=>{
+    const isToday=d.toDateString()===todayKey;
+    return{xAxis:d.getTime(),lineStyle:{color:isToday?"rgba(102,217,139,0.16)":"rgba(255,255,255,0.06)",width:0.5}};
+  });
+  const labelStep=shortSpan?1:Math.max(2,Math.ceil((spanMs/86400000)/8));
+  const tickStep=spanMs<=2*86400000?21600000:86400000;
+  const zoomStart=shortSpan?0:Math.max(0,100-(3/(spanMs/86400000))*100);
+  const labelColor=v=>{const d=new Date(v);return d.getMinutes()===0&&d.getHours()===0?(d.toDateString()===todayKey?"#8be9a8":"#aeb9c2"):"#7f8c99"};
+  chart.setOption({...steamTheme(),animationDuration:200,
+    grid:{left:112,right:26,top:22,bottom:70},
+    tooltip:{trigger:"item",backgroundColor:"#111a23",borderColor:"#2e4254",borderWidth:1,textStyle:{color:"#e1e8ed",fontSize:12},extraCssText:"border-radius:8px",formatter:p=>{const s=new Date(p.data.value[1]),e=new Date(p.data.value[2]);const same=s.toDateString()===e.toDateString();const date=`${ganttDateText(s)}${same?"":` – ${ganttDateText(e)}`}`;return`<b>${escapeHtml(p.name)}</b> · ${escapeHtml(p.data.game_name)}<br/>${date} ${ganttClock(s.getTime())} → ${ganttClock(e.getTime())}<br/>时长 ${formatDuration(p.data.duration_min)}`}},
+    xAxis:{type:"time",min:axisStartMs,max:axisEndMs,minInterval:tickStep,maxInterval:tickStep,axisLine:{lineStyle:{color:"#2a475e"}},axisTick:{show:false},
+      axisLabel:{show:true,color:labelColor,fontSize:10,lineHeight:13,hideOverlap:true,formatter:v=>{
+        const d=new Date(v);
+        if(d.getMinutes()!==0)return"";
+        if(d.getHours()===0){
+          const dayIndex=Math.round((new Date(d.getFullYear(),d.getMonth(),d.getDate()).getTime()-axisStartMs)/86400000);
+          if(dayIndex%labelStep!==0)return"";
+          const isToday=d.toDateString()===todayKey;
+          return shortSpan?`${ganttDateText(d)}\n${isToday?"今天":ganttWeekday(d)}`:`${ganttDateText(d)}`;
+        }
+        if(shortSpan&&d.getHours()%6===0)return`${String(d.getHours()).padStart(2,"0")}:00`;
+        return"";
+      }},
+      splitLine:{show:false}},
+    yAxis:{type:"category",data:players.map(p=>p.name),axisLabel:{color:"#dfe7ee",fontSize:12,width:96,overflow:"truncate",formatter:v=>String(v).length>8?`${String(v).slice(0,8)}…`:v},axisTick:{show:false},axisLine:{show:false},splitArea:{show:true,areaStyle:{color:["rgba(255,255,255,0.012)","rgba(255,255,255,0)"]}}},
+    dataZoom:[{type:"inside",start:zoomStart,end:100},{type:"slider",height:18,bottom:10,start:zoomStart,end:100,borderColor:"#223140",backgroundColor:"#111a23",fillerColor:"rgba(90,169,214,0.16)",handleStyle:{color:"#5aa9d6",borderColor:"#5aa9d6"},moveHandleStyle:{color:"#2a475e"},dataBackground:{lineStyle:{color:"#2a475e"},areaStyle:{color:"rgba(90,169,214,0.10)"}},selectedDataBackground:{lineStyle:{color:"#5aa9d6"},areaStyle:{color:"rgba(90,169,214,0.22)"}},textStyle:{color:"#7f8c99",fontSize:10}}],
+    series:[{type:"custom",renderItem:(params,api)=>{const row=api.value(0);const s=api.coord([api.value(1),row]);const e=api.coord([api.value(2),row]);const h=Math.min(20,Math.max(10,api.size([0,1])[1]*0.42));const w=Math.max(e[0]-s[0],6);return{type:"rect",shape:{x:s[0],y:s[1]-h/2,width:w,height:h,r:3},style:api.style()}},encode:{x:[1,2],y:0},
+      data:sessions.map(s=>({name:s.player,value:[s.pi,new Date(s.start*1000),new Date(s.end*1000)],gameid:s.gameid,game_name:s.game_name,duration_min:s.duration_min,itemStyle:{color:gch(s.gameid||"0"),opacity:active.size&&!active.has(s.gameid)?0.12:0.95}})),
+      markArea:{silent:true,data:bands},
+      markLine:{silent:true,symbol:"none",animation:false,label:{show:false},data:marks}}]});
 }
 
 // ====== Heatmap ======
-let heatmapState={period:90,group:"",selectedDate:""};
-function formatHeatmapDuration(minutes){minutes=Number(minutes)||0;if(minutes<60)return`${minutes} 分钟`;const hours=Math.floor(minutes/60);const rest=minutes%60;return rest?`${hours} 小时 ${rest} 分钟`:`${hours} 小时`}
+let heatmapState={period:90,group:"",selectedDate:"",activityOpen:false};
+function toWholeMinutes(value){
+  let minutes;
+  try{minutes=Number(value)}catch(_){return 0}
+  if(!Number.isFinite(minutes)||minutes<=0)return 0;
+  return Math.round(minutes);
+}
+function formatDuration(value){
+  const total=toWholeMinutes(value);
+  if(total<60)return`${total} 分钟`;
+  const hours=Math.floor(total/60);
+  const rest=total%60;
+  return rest?`${hours} 小时 ${rest} 分钟`:`${hours} 小时`;
+}
 function heatmapDateLabel(date){const d=new Date(`${date}T00:00:00`);return`${d.getMonth()+1}月${d.getDate()}日`}
 async function renderHeatmap(params){
   if(params&&params.player){await renderPlayerHeatmap(params.player);return}
@@ -200,20 +293,62 @@ async function renderHeatmap(params){
   const c=document.getElementById("content");const groups=data.groups||[];
   c.innerHTML=`<section class="heatmap-page">
     <div class="heatmap-hero"><div><div class="heatmap-eyebrow">STEAM MONITOR</div><h2 class="page-title">团队贡献热力图</h2><p>查看群组每日游戏活跃度，点击日期可展开主要贡献玩家。</p></div>
-      <div class="heatmap-controls"><label>数据范围<select id="heatmap-period"><option value="30">近 30 天</option><option value="90">近 90 天</option><option value="180">近 180 天</option><option value="366">近一年</option></select></label><label>群组<select id="heatmap-group"><option value="">全部群组</option>${groups.map(g=>`<option value="${escapeAttr(g.id)}">群 ${escapeHtml(g.id)} · ${g.player_count} 人</option>`).join("")}</select></label></div></div>
-    <div class="heatmap-summary"><div><span>累计活跃</span><strong>${formatHeatmapDuration(Object.values(data.heatmap_data||{}).reduce((a,b)=>a+b,0))}</strong></div><div><span>活跃玩家</span><strong>${(data.players||[]).length}</strong></div><div><span>活跃日期</span><strong>${Object.values(data.heatmap_data||{}).filter(v=>v>0).length}</strong></div></div>
+      <div class="heatmap-controls"><label>数据范围<select id="heatmap-period"><option value="30">近 30 天</option><option value="90">近 90 天</option><option value="180">近 180 天</option><option value="366">近一年</option></select></label><label>群组<select id="heatmap-group"><option value="">全部群组</option>${groups.map(g=>`<option value="${escapeAttr(g.id)}">群 ${escapeHtml(g.id)} · ${g.player_count} 人</option>`).join("")}</select></label><button class="btn btn-sm heatmap-activity-toggle" id="heatmap-activity-toggle" type="button">${heatmapState.activityOpen?"收起活跃热度":"用户平均活跃热度图"}</button></div></div>
+    <div class="heatmap-summary"><div><span>累计活跃</span><strong>${formatDuration(Object.values(data.heatmap_data||{}).reduce((a,b)=>a+b,0))}</strong></div><div><span>活跃玩家</span><strong>${(data.players||[]).length}</strong></div><div><span>活跃日期</span><strong>${Object.values(data.heatmap_data||{}).filter(v=>v>0).length}</strong></div></div>
     <div class="heatmap-layout"><div class="card heatmap-calendar-card"><div class="heatmap-card-head"><div><div class="card-title">每日活跃日历</div><p>圆环越明亮代表当日累计游玩时长越高，点击日期查看贡献玩家</p></div><div class="heatmap-legend"><span>少</span><i></i><i></i><i></i><i></i><i></i><span>多</span></div></div><div id="heatmap-cal" class="heatmap-calendar"></div></div>
       <aside class="card heatmap-detail"><div id="heatmap-detail"></div></aside></div>
     <div class="card heatmap-ranking"><div class="heatmap-card-head"><div><div class="card-title">周期贡献排行</div><p>当前范围内累计游玩时长</p></div></div><div id="heatmap-players" class="heatmap-player-grid"></div></div>
+    <div class="card heatmap-activity-card" id="heatmap-activity-card"${heatmapState.activityOpen?"":' style="display:none"'}>
+      <div class="heatmap-card-head"><div><div class="card-title">用户平均活跃热度图</div><p id="heatmap-activity-note">每 10 分钟一个时段 · 平均同时游戏人数与峰值</p></div></div>
+      <div id="heatmap-activity" class="chart-box-lg heatmap-activity-chart"></div>
+    </div>
   </section>`;
   const periodSelect=document.getElementById("heatmap-period"),groupSelect=document.getElementById("heatmap-group");periodSelect.value=String(heatmapState.period);groupSelect.value=data.selected_group||"";
   periodSelect.addEventListener("change",()=>renderHeatmap({period:periodSelect.value,group:groupSelect.value}));groupSelect.addEventListener("change",()=>renderHeatmap({period:periodSelect.value,group:groupSelect.value}));
+  const activityToggle=document.getElementById("heatmap-activity-toggle");
+  if(activityToggle)activityToggle.addEventListener("click",()=>{
+    heatmapState.activityOpen=!heatmapState.activityOpen;
+    const card=document.getElementById("heatmap-activity-card");
+    if(card)card.style.display=heatmapState.activityOpen?"":"none";
+    activityToggle.textContent=heatmapState.activityOpen?"收起活跃热度":"用户平均活跃热度图";
+    if(heatmapState.activityOpen)loadHeatmapActivity(true);else disposeChart("heatmap-activity");
+  });
+  if(heatmapState.activityOpen)loadHeatmapActivity();
   const hd=data.heatmap_data||{},dates=Object.keys(hd).sort(),activeDates=dates.filter(d=>hd[d]>0);if(!heatmapState.selectedDate||!Object.prototype.hasOwnProperty.call(hd,heatmapState.selectedDate))heatmapState.selectedDate=activeDates[activeDates.length-1]||dates[dates.length-1]||"";
-  const showDay=date=>{heatmapState.selectedDate=date;document.querySelectorAll(".heatmap-day-contributor").forEach(el=>el.remove());const detail=document.getElementById("heatmap-detail"),players=(data.daily_contributors||{})[date]||[],total=hd[date]||0;detail.innerHTML=`<div class="heatmap-detail-date"><span>${date?heatmapDateLabel(date):"选择日期"}</span><small>${date||"点击日历中的方块"}</small></div><div class="heatmap-detail-total"><span>当日累计</span><strong>${formatHeatmapDuration(total)}</strong></div><div class="heatmap-contributors">${players.length?players.map((p,i)=>{const top=(p.games||[])[0];const pct=total?Math.round(p.total_minutes/total*100):0;return`<button class="heatmap-contributor" onclick="navigateTo('heatmap',{player:${jsArg(p.sid)}})"><span class="heatmap-rank">${i+1}</span><span class="heatmap-contributor-avatar" data-day-sid="${escapeAttr(p.sid)}"><span class="mdi mdi-account"></span></span><span class="heatmap-contributor-main"><b>${escapeHtml(p.name)}</b><small>${top?escapeHtml(top.name):"游戏记录"} · ${pct}%</small><i><em style="width:${pct}%"></em></i></span><strong>${formatHeatmapDuration(p.total_minutes)}</strong></button>`}).join(""):'<div class="heatmap-empty"><span class="mdi mdi-calendar-blank"></span><p>当日暂无游玩记录</p></div>'}</div>`;Promise.all(players.map(p=>loadAvatar(p.sid).then(av=>{const el=document.querySelector(`[data-day-sid="${CSS.escape(String(p.sid))}"]`);if(el&&av)el.innerHTML=`<img src="${safeImageUrl(av)}">`})))};
-  if(dates.length){const calendar=document.getElementById("heatmap-cal"),maxV=Math.max(...Object.values(hd),60),start=new Date(`${dates[0]}T00:00:00`),end=new Date(`${dates[dates.length-1]}T00:00:00`),today=new Date().toLocaleDateString("en-CA"),months=[];for(let cursor=new Date(start.getFullYear(),start.getMonth(),1);cursor<=end;cursor.setMonth(cursor.getMonth()+1))months.push([cursor.getFullYear(),cursor.getMonth()+1]);calendar.innerHTML=months.map(([year,month])=>{const monthKey=`${year}-${String(month).padStart(2,"0")}`,days=new Date(year,month,0).getDate(),cells=[];for(let day=1;day<=days;day++){const date=`${monthKey}-${String(day).padStart(2,"0")}`;if(date<dates[0]||date>dates[dates.length-1])continue;const minutes=Number(hd[date]||0),level=minutes<=0?0:Math.max(1,Math.min(5,Math.ceil(minutes/maxV*5))),selected=date===heatmapState.selectedDate?" is-selected":"",todayBadge=date===today?'<span class="heatmap-today">今天</span>':"";cells.push(`<button class="heatmap-day-circle level-${level}${selected}" data-date="${date}" type="button" title="${date} · ${formatHeatmapDuration(minutes)}"><strong>${day}</strong><span>${minutes?`+${minutes<60?`${minutes}m`:`${(minutes/60).toFixed(1)}h`}`:"0h"}</span>${todayBadge}</button>`)}return`<section class="heatmap-month"><h3>${year} 年 ${month} 月</h3><div class="heatmap-circle-grid">${cells.join("")}</div></section>`}).join("");calendar.querySelectorAll(".heatmap-day-circle").forEach(el=>el.addEventListener("click",()=>{calendar.querySelectorAll(".heatmap-day-circle").forEach(day=>day.classList.remove("is-selected"));el.classList.add("is-selected");showDay(el.dataset.date)}))}
+  const showDay=date=>{heatmapState.selectedDate=date;document.querySelectorAll(".heatmap-day-contributor").forEach(el=>el.remove());const detail=document.getElementById("heatmap-detail"),players=(data.daily_contributors||{})[date]||[],total=hd[date]||0;detail.innerHTML=`<div class="heatmap-detail-date"><span>${date?heatmapDateLabel(date):"选择日期"}</span><small>${date||"点击日历中的方块"}</small></div><div class="heatmap-detail-total"><span>当日累计</span><strong>${formatDuration(total)}</strong></div><div class="heatmap-contributors">${players.length?players.map((p,i)=>{const top=(p.games||[])[0];const pct=total?Math.round(p.total_minutes/total*100):0;return`<button class="heatmap-contributor" onclick="navigateTo('heatmap',{player:${jsArg(p.sid)}})"><span class="heatmap-rank">${i+1}</span><span class="heatmap-contributor-avatar" data-day-sid="${escapeAttr(p.sid)}"><span class="mdi mdi-account"></span></span><span class="heatmap-contributor-main"><b>${escapeHtml(p.name)}</b><small>${top?escapeHtml(top.name):"游戏记录"} · ${pct}%</small><i><em style="width:${pct}%"></em></i></span><strong>${formatDuration(p.total_minutes)}</strong></button>`}).join(""):'<div class="heatmap-empty"><span class="mdi mdi-calendar-blank"></span><p>当日暂无游玩记录</p></div>'}</div>`;Promise.all(players.map(p=>loadAvatar(p.sid).then(av=>{const el=document.querySelector(`[data-day-sid="${CSS.escape(String(p.sid))}"]`);if(el&&av)el.innerHTML=`<img src="${safeImageUrl(av)}">`})))};
+  if(dates.length){const calendar=document.getElementById("heatmap-cal"),maxV=Math.max(...Object.values(hd),60),start=new Date(`${dates[0]}T00:00:00`),end=new Date(`${dates[dates.length-1]}T00:00:00`),today=new Date().toLocaleDateString("en-CA"),months=[];for(let cursor=new Date(start.getFullYear(),start.getMonth(),1);cursor<=end;cursor.setMonth(cursor.getMonth()+1))months.push([cursor.getFullYear(),cursor.getMonth()+1]);calendar.innerHTML=months.map(([year,month])=>{const monthKey=`${year}-${String(month).padStart(2,"0")}`,days=new Date(year,month,0).getDate(),cells=[];for(let day=1;day<=days;day++){const date=`${monthKey}-${String(day).padStart(2,"0")}`;if(date<dates[0]||date>dates[dates.length-1])continue;const minutes=toWholeMinutes(hd[date]),level=minutes<=0?0:Math.max(1,Math.min(5,Math.ceil(minutes/maxV*5))),selected=date===heatmapState.selectedDate?" is-selected":"",todayBadge=date===today?'<span class="heatmap-today">今天</span>':"";cells.push(`<button class="heatmap-day-circle level-${level}${selected}" data-date="${date}" type="button" title="${date} · ${formatDuration(minutes)}"><strong>${day}</strong><span>${minutes?`+${minutes<60?`${minutes}m`:`${(minutes/60).toFixed(1)}h`}`:"0h"}</span>${todayBadge}</button>`)}return`<section class="heatmap-month"><h3>${year} 年 ${month} 月</h3><div class="heatmap-circle-grid">${cells.join("")}</div></section>`}).join("");calendar.querySelectorAll(".heatmap-day-circle").forEach(el=>el.addEventListener("click",()=>{calendar.querySelectorAll(".heatmap-day-circle").forEach(day=>day.classList.remove("is-selected"));el.classList.add("is-selected");showDay(el.dataset.date)}))}
   showDay(heatmapState.selectedDate);
-  const pd=document.getElementById("heatmap-players"),players=data.players||[];pd.innerHTML=players.length?players.map((p,i)=>`<button class="heatmap-player-card" data-sid="${escapeAttr(p.sid)}" onclick="navigateTo('heatmap',{player:${jsArg(p.sid)}})"><span class="heatmap-player-position">${String(i+1).padStart(2,"0")}</span><span class="player-avatar"><span class="mdi mdi-account"></span></span><span><b>${escapeHtml(p.name)}</b><small>${escapeHtml(p.sid)}</small></span><strong>${formatHeatmapDuration(p.total_minutes)}</strong></button>`).join(""):'<div class="empty-state"><span class="mdi mdi-calendar-blank"></span><p>当前范围暂无记录</p></div>';
+  const pd=document.getElementById("heatmap-players"),players=data.players||[];pd.innerHTML=players.length?players.map((p,i)=>`<button class="heatmap-player-card" data-sid="${escapeAttr(p.sid)}" onclick="navigateTo('heatmap',{player:${jsArg(p.sid)}})"><span class="heatmap-player-position">${String(i+1).padStart(2,"0")}</span><span class="player-avatar"><span class="mdi mdi-account"></span></span><span><b>${escapeHtml(p.name)}</b><small>${escapeHtml(p.sid)}</small></span><strong>${formatDuration(p.total_minutes)}</strong></button>`).join(""):'<div class="empty-state"><span class="mdi mdi-calendar-blank"></span><p>当前范围暂无记录</p></div>';
   Promise.all(players.map(p=>loadAvatar(p.sid).then(av=>{const card=document.querySelector(`.heatmap-player-card[data-sid="${CSS.escape(String(p.sid))}"]`);if(card&&av)card.querySelector(".player-avatar").innerHTML=`<img src="${safeImageUrl(av)}">`})));
+}
+async function loadHeatmapActivity(force=false){
+  const el=document.getElementById("heatmap-activity");if(!el)return;
+  const key=`${heatmapState.period}|${heatmapState.group}`;
+  if(!force&&el.dataset.key===key)return;
+  el.innerHTML='<div class="page-loading">正在统计活跃时段…</div>';
+  try{
+    const query=new URLSearchParams({period:String(heatmapState.period)});if(heatmapState.group)query.set("group_id",heatmapState.group);
+    const data=await API.get(`/api/heatmap/activity?${query.toString()}`);
+    const buckets=data.buckets||[];const summary=data.summary||{};
+    const noteEl=document.getElementById("heatmap-activity-note");
+    if(noteEl)noteEl.textContent=`每 10 分钟一个时段 · 最近 ${data.days} 天（有效 ${data.days_with_data} 天）· 平均同时在线 ${summary.avg_online??0} 人 · 峰值 ${summary.peak??0} 人${data.note?` · ${data.note}`:""}`;
+    if(!buckets.length||!summary.sessions){el.innerHTML='<div class="empty-state"><p>当前范围没有可用于统计的会话记录</p></div>';return}
+    const step=Number(data.bucket_minutes||10);
+    const labels=buckets.map(b=>b.label);
+    const chart=initChart("heatmap-activity");if(!chart)return;
+    chart.setOption({...steamTheme(),
+      grid:{left:52,right:52,top:38,bottom:62},
+      tooltip:{trigger:"axis",backgroundColor:"#1e2c38",borderColor:"#2e4254",borderWidth:1,extraCssText:"border-radius:8px",formatter:items=>{const i=(items&&items[0])?items[0].dataIndex:0;const b=buckets[i]||{};const endMinute=(b.start_minute??0)+step;const endLabel=`${String(Math.floor(endMinute/60)%24).padStart(2,"0")}:${String(endMinute%60).padStart(2,"0")}`;return`<b>${b.label} - ${endLabel}</b><br/>平均 ${b.avg} 人 · 峰值 ${b.peak} 人`}},
+      legend:{data:["平均同时在线","峰值"],textStyle:{color:"#aeb9c2"},top:2},
+      xAxis:{type:"category",data:labels,axisTick:{show:false},axisLine:{lineStyle:{color:"#2a475e"}},axisLabel:{color:"#aeb9c2",interval:(index)=>index%6===0}},
+      yAxis:[{type:"value",name:"平均",nameTextStyle:{color:"#aeb9c2"},axisLabel:{color:"#aeb9c2"},splitLine:{lineStyle:{color:"rgba(255,255,255,0.06)"}}},{type:"value",name:"峰值",nameTextStyle:{color:"#aeb9c2"},axisLabel:{color:"#aeb9c2"},splitLine:{show:false}}],
+      dataZoom:[{type:"inside",start:0,end:100},{type:"slider",height:16,bottom:16,borderColor:"#243343",fillerColor:"rgba(90,169,214,0.15)",textStyle:{color:"#aeb9c2"}}],
+      series:[
+        {name:"平均同时在线",type:"bar",data:buckets.map(b=>b.avg),barMaxWidth:6,itemStyle:{color:"#5aa9d6",borderRadius:[2,2,0,0]}},
+        {name:"峰值",type:"line",yAxisIndex:1,data:buckets.map(b=>b.peak),smooth:true,symbol:"none",lineStyle:{width:1.5,color:"#b2d430"}}
+      ]});
+    el.dataset.key=key;
+  }catch(e){el.innerHTML='<div class="empty-state"><p>活跃热度统计失败，请稍后重试</p></div>'}
 }
 async function loadAvatar(sid){try{const r=await API.get(`/api/players/avatar/${sid}`);return r.avatar_url||""}catch(e){return""}}
 async function showTooltip(e,sid){
@@ -230,7 +365,7 @@ async function renderPlayerHeatmap(sid){
     <div class="charts-row"><div class="card"><div class="card-title">日历热力图</div><div id="heatmap-player-cal" class="chart-box"></div></div><div class="card"><div class="card-title">游戏占比</div><div id="heatmap-player-pie" class="chart-box-lg" style="height:480px"></div></div></div>`;
   if(typeof echarts!=="undefined"){
     const hd=data.heatmap_daily||{};const dates=Object.keys(hd).sort();const cd=dates.map(d=>[d,hd[d]]);const maxV=Math.max(...Object.values(hd),60);
-    const hm=initChart("heatmap-player-cal");if(hm)hm.setOption({...steamTheme(),tooltip:{formatter:p=>{const hrs=(p.data[1]/60).toFixed(1);return`${p.data[0]}<br/><b>${p.data[1]}</b>分钟(${hrs}h)`}},visualMap:{min:0,max:maxV,orient:"horizontal",left:"center",bottom:0,inRange:{color:["rgb(17,22,28)","rgb(2,46,18)","#006d32","#26a641","#39d353","#6ae07a"]},textStyle:{color:"#aeb9c2"}},calendar:{range:dates.length?[dates[0],dates[dates.length-1]]:"2026-07",cellSize:[20,20],dayLabel:{color:"#aeb9c2"},monthLabel:{color:"#aeb9c2"},itemStyle:{borderColor:"#0a0e12",borderWidth:3,borderRadius:2}},series:[{type:"heatmap",coordinateSystem:"calendar",data:cd}]});
+    const hm=initChart("heatmap-player-cal");if(hm)hm.setOption({...steamTheme(),tooltip:{formatter:p=>{const total=toWholeMinutes(p.data[1]);const hrs=(total/60).toFixed(1);return`${p.data[0]}<br/><b>${formatDuration(total)}</b>（${hrs}h）`}},visualMap:{min:0,max:maxV,orient:"horizontal",left:"center",bottom:0,inRange:{color:["rgb(17,22,28)","rgb(2,46,18)","#006d32","#26a641","#39d353","#6ae07a"]},textStyle:{color:"#aeb9c2"}},calendar:{range:dates.length?[dates[0],dates[dates.length-1]]:"2026-07",cellSize:[20,20],dayLabel:{color:"#aeb9c2"},monthLabel:{color:"#aeb9c2"},itemStyle:{borderColor:"#0a0e12",borderWidth:3,borderRadius:2}},series:[{type:"heatmap",coordinateSystem:"calendar",data:cd}]});
     const cols=["#5aa9d6","#b2d430","#e8a030","#b37cd4","#e05050","#50c8c8","#ff8c60","#60b0e0"];
     const pc=initChart("heatmap-player-pie");
     if(pc){
@@ -251,7 +386,7 @@ async function renderPlayerHeatmap(sid){
           formatter:p=>{
             const gi=p.data.gameid;
             const cover=covers[gi]||"";
-            return`<div style="min-width:160px"><b>${escapeHtml(p.name)}</b>${cover?`<br><img src="${safeImageUrl(cover)}" style="width:100%;max-width:220px;border-radius:6px;margin:8px 0">`:""}<br>${p.value}分钟</div>`
+            return`<div style="min-width:160px"><b>${escapeHtml(p.name)}</b>${cover?`<br><img src="${safeImageUrl(cover)}" style="width:100%;max-width:220px;border-radius:6px;margin:8px 0">`:""}<br>${formatDuration(p.value)}</div>`
           },
         },
         legend:{bottom:0,textStyle:{color:"#aeb9c2"}},
@@ -366,9 +501,17 @@ function safeImageUrl(value){
   return""
 }
 
-const SL={steam_api_key:"Steam Web API密钥",sgdb_api_key:"SteamGridDB API密钥",steam_api_base:"Steam Web API代理地址",steam_store_base:"Steam商店代理地址",sgdb_api_base:"SteamGridDB代理地址",fixed_poll_interval:"固定轮询间隔(秒)",smart_poll_intervals:"智能轮询间隔(分)",retry_times:"API重试次数",max_group_size:"单群最大监控人数",detailed_poll_log:"详细轮询日志",enable_achievement_poll:"成就轮询推送",enable_steam_style:"列表新版渲染风格",enable_game_start_notify:"游戏开始通知",enable_game_end_notify:"游戏结束通知",enable_network_fluctuation_notify:"网络波动通知",notify_send_image:"通知发送图片",notify_send_text:"通知发送文本",game_filter_mode:"游戏过滤模式",game_filter_ids:"游戏过滤游戏ID",rank_push_hour:"排行榜推送小时",rank_push_minute:"排行榜推送分钟",enable_proxy:"启用网络代理",proxy_url:"代理链接",cache_avatar_hours:"头像缓存时间(小时)",cache_avatar_frame_hours:"头像框缓存时间(小时)"};
-const SO=["steam_api_key","sgdb_api_key","steam_api_base","steam_store_base","sgdb_api_base","fixed_poll_interval","smart_poll_intervals","retry_times","max_group_size","enable_game_start_notify","enable_game_end_notify","enable_network_fluctuation_notify","enable_achievement_poll","enable_steam_style","notify_send_text","notify_send_image","detailed_poll_log","game_filter_mode","game_filter_ids","rank_push_hour","rank_push_minute","enable_proxy","proxy_url","cache_avatar_hours","cache_avatar_frame_hours"];
-const BK=["detailed_poll_log","enable_achievement_poll","enable_steam_style","enable_game_start_notify","enable_game_end_notify","enable_network_fluctuation_notify","notify_send_image","notify_send_text"];
+const SL={steam_api_key:"Steam Web API密钥",sgdb_api_key:"SteamGridDB API密钥",steam_api_base:"Steam Web API代理地址",steam_store_base:"Steam商店代理地址",sgdb_api_base:"SteamGridDB代理地址",fixed_poll_interval:"固定轮询间隔(秒)",smart_poll_intervals:"智能轮询间隔(分)",retry_times:"API重试次数",max_group_size:"单群最大监控人数",detailed_poll_log:"详细轮询日志",enable_achievement_poll:"成就轮询推送",enable_steam_style:"列表新版渲染风格",enable_game_start_notify:"游戏开始通知",enable_game_end_notify:"游戏结束通知",enable_network_fluctuation_notify:"网络波动通知",enable_user_online_notify:"用户上线通知",enable_user_offline_notify:"用户下线通知",notify_send_image:"通知发送图片",notify_send_text:"通知发送文本",notify_quiet_hours:"静默时段(起始,结束)",game_filter_mode:"游戏过滤模式",game_filter_ids:"游戏过滤游戏ID",rank_push_hour:"排行榜推送小时",rank_push_minute:"排行榜推送分钟",enable_proxy:"启用网络代理",proxy_url:"代理链接",cache_avatar_hours:"头像缓存时间(小时)",cache_avatar_frame_hours:"头像框缓存时间(小时)",enable_owned_games_notify:"游戏库新入库播报",owned_games_notify_style:"新入库播报样式",owned_games_auto_compact_threshold:"自动切换合并图的款数阈值",owned_games_compact_page_size:"简洁图片每页游戏数",owned_games_compact_max_pages:"简洁模式单轮最多页数",owned_games_compact_cover_concurrency:"简洁图片封面并发数",owned_games_max_per_notify:"单轮最多渲染卡片数(详细模式)",owned_games_ignore_appids:"游戏库忽略的AppID"};
+const SO=["steam_api_key","sgdb_api_key","steam_api_base","steam_store_base","sgdb_api_base","fixed_poll_interval","smart_poll_intervals","retry_times","max_group_size","enable_game_start_notify","enable_game_end_notify","enable_network_fluctuation_notify","enable_user_online_notify","enable_user_offline_notify","enable_achievement_poll","enable_steam_style","notify_send_text","notify_send_image","notify_quiet_hours","detailed_poll_log","game_filter_mode","game_filter_ids","rank_push_hour","rank_push_minute","enable_proxy","proxy_url","cache_avatar_hours","cache_avatar_frame_hours","enable_owned_games_notify","owned_games_notify_style","owned_games_auto_compact_threshold","owned_games_compact_page_size","owned_games_compact_max_pages","owned_games_compact_cover_concurrency","owned_games_max_per_notify","owned_games_ignore_appids"];
+const BK=["detailed_poll_log","enable_achievement_poll","enable_steam_style","enable_game_start_notify","enable_game_end_notify","enable_network_fluctuation_notify","enable_user_online_notify","enable_user_offline_notify","notify_send_image","notify_send_text","enable_owned_games_notify"];
+const SELV={
+  game_filter_mode:[{v:"全部游戏",t:"全部游戏"},{v:"白名单",t:"白名单"},{v:"黑名单",t:"黑名单"}],
+  owned_games_notify_style:[
+    {v:"auto",t:"自动（按数量决定）"},
+    {v:"detailed",t:"详细卡片（每款一张）"},
+    {v:"compact",t:"合并图片（多款一张）"}
+  ]
+};
 
 async function renderQQOfficial(){
   const data=await API.get("/api/qq-official/settings");const c=document.getElementById("content");
@@ -410,14 +553,14 @@ window.saveQQOfficial=async()=>{
   try{const result=await API.post("/api/qq-official/settings",payload);if(result.ok){toast("QQ 官方机器人配置已保存");await renderQQOfficial()}else toast(result.error||"保存失败","error")}catch(error){toast(error.message||"保存失败","error")}
 };
 window.resetQQOfficial=async()=>{if(!await pageConfirm("确认恢复 QQ 官方机器人默认配置？AppID、密钥和面板 ID 将被清空。"))return;try{const result=await API.post("/api/qq-official/settings/reset",{});if(result.ok){toast("已恢复默认配置");await renderQQOfficial()}else toast(result.error||"重置失败","error")}catch(error){toast(error.message||"重置失败","error")}};
-const IK=["fixed_poll_interval","retry_times","max_group_size","cache_avatar_hours","cache_avatar_frame_hours","rank_push_hour","rank_push_minute"];
-const SK=["smart_poll_intervals","proxy_url","game_filter_ids"];const SEK=["steam_api_key","sgdb_api_key"];
+const IK=["fixed_poll_interval","retry_times","max_group_size","cache_avatar_hours","cache_avatar_frame_hours","rank_push_hour","rank_push_minute","owned_games_auto_compact_threshold","owned_games_compact_page_size","owned_games_compact_max_pages","owned_games_compact_cover_concurrency","owned_games_max_per_notify"];
+const SK=["smart_poll_intervals","proxy_url","game_filter_ids","notify_quiet_hours"];const SEK=["steam_api_key","sgdb_api_key"];
 async function renderSettings(){
   const data=await API.get("/api/settings");const c=document.getElementById("content");
   let h='<h2 class="page-title">插件设置</h2><div class="card">';
   for(const k of SO){const l=SL[k]||k;
     if(SEK.includes(k))h+=`<div class="form-group"><label class="form-label">${l}</label><input id="cfg-${k}" class="form-input" type="password"></div>`;
-    else if(k==="game_filter_mode"){h+=`<div class="form-group"><label class="form-label">${l}</label><select id="cfg-${k}" class="form-input">${["全部游戏","白名单","黑名单"].map(m=>`<option ${data.game_filter_mode===m?"selected":""}>${m}</option>`).join("")}</select></div>`}
+    else if(SELV[k]){h+=`<div class="form-group"><label class="form-label">${l}</label><select id="cfg-${k}" class="form-input">${SELV[k].map(o=>`<option value="${escapeAttr(o.v)}" ${String(data[k])===String(o.v)?"selected":""}>${escapeHtml(o.t)}</option>`).join("")}</select></div>`}
     else if(BK.includes(k))h+=`<div class="form-group"><label class="flex gap-8" style="align-items:center;cursor:pointer"><label class="toggle"><input type="checkbox" id="cfg-${k}" ${data[k]?"checked":""}><span class="slider"></span></label><span>${l}</span></label></div>`;
     else if(IK.includes(k))h+=`<div class="form-group"><label class="form-label">${l}</label><input id="cfg-${k}" class="form-input" type="number" value="${escapeAttr(data[k]??"")}"></div>`;
     else h+=`<div class="form-group"><label class="form-label">${l}</label><input id="cfg-${k}" class="form-input" value="${escapeAttr(data[k]??"")}"></div>`}
@@ -425,7 +568,7 @@ async function renderSettings(){
   h+=`<details class="card settings-collapsible" id="permission-settings"><summary><span><span class="mdi mdi-shield-account"></span> 指令权限</span><span class="summary-hint">按指令设置 admin / member</span></summary><div id="permission-settings-body" class="collapsible-body"><p class="permission-help">展开后读取 AstrBot 当前权限配置。</p></div></details>`;
   c.innerHTML=h;
   const permissionDetails=document.getElementById("permission-settings");permissionDetails.addEventListener("toggle",()=>{if(permissionDetails.open&&!permissionDetails.dataset.loaded){permissionDetails.dataset.loaded="1";loadPermissionSettings()}});
-  window.saveSet=async()=>{const p={};BK.forEach(k=>p[k]=document.getElementById(`cfg-${k}`).checked);SEK.forEach(k=>{const v=document.getElementById(`cfg-${k}`).value;if(v)p[k]=v});p.enable_proxy=document.getElementById("cfg-enable_proxy").checked;IK.forEach(k=>p[k]=parseInt(document.getElementById(`cfg-${k}`).value)||0);SK.forEach(k=>p[k]=document.getElementById(`cfg-${k}`).value);p.game_filter_mode=document.getElementById("cfg-game_filter_mode").value;const r=await API.post("/api/settings/update",p);if(r.ok)toast("已保存，部分需重启生效");else toast(r.error||"失败","error")};
+  window.saveSet=async()=>{const p={};BK.forEach(k=>p[k]=document.getElementById(`cfg-${k}`).checked);SEK.forEach(k=>{const v=document.getElementById(`cfg-${k}`).value;if(v)p[k]=v});p.enable_proxy=document.getElementById("cfg-enable_proxy").checked;IK.forEach(k=>p[k]=parseInt(document.getElementById(`cfg-${k}`).value)||0);SK.forEach(k=>p[k]=document.getElementById(`cfg-${k}`).value);Object.keys(SELV).forEach(k=>{const el=document.getElementById(`cfg-${k}`);if(el)p[k]=el.value});const r=await API.post("/api/settings/update",p);if(r.ok)toast("已保存，部分需重启生效");else toast(r.error||"失败","error")};
 }
 
 // ====== Test ======

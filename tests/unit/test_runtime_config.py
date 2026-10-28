@@ -31,8 +31,20 @@ def test_apply_runtime_config_sets_runtime_fields():
     assert plugin.config["smart_poll_intervals"] == "1,2,3"
     assert plugin.rank_push_hour == 9
     assert plugin.rank_push_minute == 15
+    assert plugin.config["notify_quiet_hours"] == "0,0"
     assert plugin.proxy is None
     client_cls.assert_called_once()
+
+
+def test_apply_runtime_config_keeps_quiet_hours():
+    plugin = SimpleNamespace()
+    config = {"notify_quiet_hours": "23,8"}
+    with patch("src.plugin.runtime_config.configure_tls"), patch(
+        "src.plugin.runtime_config.ITADClient"
+    ), patch("src.plugin.runtime_config.register_sensitive_values"):
+        apply_runtime_config(plugin, config)
+
+    assert plugin.config["notify_quiet_hours"] == "23,8"
 
 
 def test_apply_hot_update_parses_intervals_and_ints():
@@ -54,3 +66,35 @@ def test_apply_hot_update_parses_intervals_and_ints():
     ok, msg = apply_hot_update(plugin, "missing", "1")
     assert ok is False
     assert "无效参数" in msg
+
+
+def test_apply_hot_update_owned_style_string():
+    # 新装用户配置文件里没有该键 → 靠 OWNED_GAMES_HOT_KEYS 白名单放行
+    plugin = SimpleNamespace(config={"steam_api_key": "K"})
+
+    ok, msg = apply_hot_update(plugin, "owned_games_notify_style", "compact")
+
+    assert ok is True
+    assert plugin.config["owned_games_notify_style"] == "compact"
+    assert isinstance(plugin.config["owned_games_notify_style"], str)
+    assert "已设置" in msg
+
+
+def test_apply_hot_update_owned_compact_ints():
+    plugin = SimpleNamespace(config={"steam_api_key": "K"})
+
+    ok, _ = apply_hot_update(plugin, "owned_games_compact_page_size", "12")
+
+    assert ok is True
+    assert plugin.config["owned_games_compact_page_size"] == 12
+    assert isinstance(plugin.config["owned_games_compact_page_size"], int)
+
+
+def test_apply_hot_update_owned_compact_non_int_rejected():
+    plugin = SimpleNamespace(config={"steam_api_key": "K"})
+
+    ok, msg = apply_hot_update(plugin, "owned_games_compact_max_pages", "abc")
+
+    assert ok is False
+    assert "类型错误" in msg
+    assert "owned_games_compact_max_pages" not in plugin.config

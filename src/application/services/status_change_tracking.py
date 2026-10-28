@@ -1,6 +1,15 @@
 import time
 
 from ...domain.monitoring.polling import calculate_poll_schedule
+from ...domain.monitoring.presence import (
+    PRESENCE_OFFLINE_DEBOUNCE_SECONDS,
+    PRESENCE_OFFLINE_SUPPRESS_SECONDS,
+    PRESENCE_PENDING_MAX_STALE_SECONDS,
+    PRESENCE_RECHECK_INTERVAL_SECONDS,
+    PRESENCE_SETTLE_FRESHNESS_SECONDS,
+    is_online,
+    presence_transition,
+)
 from ...presentation.formatters.status import format_player_status
 
 _STATUS_UNSET = object()
@@ -36,7 +45,8 @@ class StatusChangeTrackingMixin:
             current_game = status.get("gameextrainfo")
             current_game_name = await self.get_chinese_game_name(current_gameid, current_game) if current_gameid else (current_game or "")
             player_name = self._resolve_bind_name(sid, status.get("name") or sid)
-            await self.session_service.handle(
+            previous = last_states.get(sid)
+            _, events = await self.session_service.handle(
                 group_id,
                 sid,
                 current_gameid,
@@ -61,6 +71,9 @@ class StatusChangeTrackingMixin:
             if interval_min >= 1 and interval_min in list(self.smart_poll_intervals)[1:]:
                 next_time = ((now // 60) // interval_min + 1) * interval_min * 60
             next_poll[sid] = next_time
+            # presence 跟踪必须在 next_poll 写入之后：防抖待定要钳制复查轮询，
+            # 放在前面会被上面的自然调度值覆盖。
+            self._track_presence(group_id, sid, previous, status, events, player_name, now, skip_push, next_poll)
             logs.append(format_player_status(
                 name=player_name,
                 game_name=current_game_name,
@@ -73,3 +86,228 @@ class StatusChangeTrackingMixin:
         self._data_dirty = True
         self._save_persistent_data()
         return "\n".join(logs) if logs else None
+
+    def _track_presence(self, group_id, sid, previous, status, events, player_name, now, skip_push, next_poll):
+        """在线状态跟踪与推送入队（personastate 与游戏会话正交，不在 session 状态机内判定）。
+
+        - 上线转换：推「已上线」（本轮开局已隐含上线的除外），并记录在线起始时间。
+        - 下线转换：不即推——进 180 秒防抖待定（_presence_pending_offline，持久化），
+          由主循环在本轮快照处理完后结算；窗口内回归上线则取消推送并恢复在线起始计时。
+        - 多群：待定按 sid 全局合并，保留最早 detected_at/deadline 与已有在线时长，
+          后检测的群只刷新 last_seen_offline_at，不覆盖先到群的结果。
+        - skip_push（启动基线/陈旧群）：绝不删除其他群已建立的待定，只刷新离线观测时间。
+        - 防抖待定存在时钳制该玩家的复查轮询（离线自然档位 3-30 分钟赶不上窗口）。
+        """
+        transition = presence_transition(previous, status)
+        online_since = self._presence_online_since
+        pending = self._presence_pending_offline
+        settled_at = self._presence_settled_offline_at
+        key = str(sid)
+
+        if transition is None:
+            if is_online(status):
+                if key in pending:
+                    # 待定未结算但快照已在线：上游写新基线等场景，直接取消
+                    pending.pop(key, None)
+                    self._save_presence_state()
+                settled_at.pop(key, None)
+                if key not in online_since:
+                    online_since[key] = now
+                    self._save_presence_state()
+            elif key in pending:
+                # 无转换的离线复查：只刷新新鲜度，不重建、不覆盖
+                pending[key]["last_seen_offline_at"] = now
+            self._clamp_recheck_poll(key, now, next_poll)
+            return
+
+        if transition.kind == "online":
+            restored = pending.pop(key, None)
+            if restored is not None:
+                self._save_presence_state()
+            # 窗口内回归：在线时长从原始起算时刻连续计算
+            if restored and restored.get("online_since") is not None:
+                online_since[key] = restored["online_since"]
+            else:
+                online_since.setdefault(key, now)
+            settled_at.pop(key, None)
+            if restored is not None:
+                # 群里从没见过「已离线」，回归后单独推「已上线」是噪音，静默取消
+                return
+            if skip_push:
+                return
+            if any(event.kind == "started" for event in events):
+                return
+            if not self.config.get("enable_user_online_notify", False):
+                return
+            # 用全局 online_since 作事件键：多群/联动推送共用同一去重键
+            self._enqueue_presence(
+                group_id, sid, player_name, online_since.get(key, now), "online", None
+            )
+            return
+
+        # 下线转换：进入 180 秒防抖待定（多群合并，不覆盖已有时长/截止时间）
+        existing = pending.get(key)
+        if not self.config.get("enable_user_offline_notify", False):
+            # 开关关闭：不建待定，已有待定也直接取消
+            if existing is not None:
+                pending.pop(key, None)
+                self._save_presence_state()
+            online_since.pop(key, None)
+            self._clamp_recheck_poll(key, now, next_poll)
+            return
+
+        if skip_push:
+            # 启动基线/陈旧群：只刷新最后离线观测时间，绝不删除其他群已建立的待定
+            if existing is not None:
+                existing["last_seen_offline_at"] = now
+                if existing.get("online_since") is None and key in online_since:
+                    start = online_since.pop(key)
+                    existing["online_since"] = start
+                    existing["online_minutes"] = max(0.0, (now - start) / 60)
+                self._save_presence_state()
+            self._clamp_recheck_poll(key, now, next_poll)
+            return
+
+        started_at = online_since.pop(key, None)
+        last_settled = settled_at.get(key)
+        if (
+            existing is None
+            and started_at is None
+            and last_settled is not None
+            and now - last_settled <= PRESENCE_OFFLINE_SUPPRESS_SECONDS
+        ):
+            # 本次离线已由其他群结算；本群只是基线滞后，避免重复推送
+            self._clamp_recheck_poll(key, now, next_poll)
+            return
+
+        if existing is not None:
+            existing["last_seen_offline_at"] = now
+            if existing.get("online_since") is None and started_at is not None:
+                existing["online_since"] = started_at
+                existing["online_minutes"] = max(0.0, (now - started_at) / 60)
+            if not existing.get("name") or existing.get("name") == key:
+                existing["name"] = player_name
+        else:
+            pending[key] = {
+                "detected_at": now,
+                "deadline": now + PRESENCE_OFFLINE_DEBOUNCE_SECONDS,
+                "last_seen_offline_at": now,
+                "online_since": started_at,
+                "online_minutes": max(0.0, (now - started_at) / 60) if started_at is not None else None,
+                "name": player_name,
+            }
+        self._save_presence_state()
+        self._clamp_recheck_poll(key, now, next_poll)
+
+    def _clamp_recheck_poll(self, key, now, next_poll):
+        """防抖窗口内把该玩家的下次轮询钳到 60 秒，确保窗口结束前有新鲜快照。"""
+        pending = self._presence_pending_offline
+        if key not in pending:
+            return
+        recheck_at = now + PRESENCE_RECHECK_INTERVAL_SECONDS
+        if next_poll.get(key, 0) > recheck_at:
+            next_poll[key] = recheck_at
+
+    def _settle_pending_offline_presence(self, now):
+        """结算到期的下线防抖待定：对监控该玩家的运行中群入队 offline 通知。
+
+        由主循环在本轮快照处理完之后调用：
+        - last_seen_offline_at 必须是最近 75 秒内的离线观测，避免旧快照误报；
+        - 超过 PRESENCE_PENDING_MAX_STALE_SECONDS 无新鲜证据则静默丢弃；
+        - 只向 running_groups 且 group_monitor_enabled 的群推送。
+        """
+        pending = self._presence_pending_offline
+        if not pending:
+            return
+        online_since = self._presence_online_since
+        settled_at = self._presence_settled_offline_at
+        for sid, settled_time in list(settled_at.items()):
+            if now - settled_time > PRESENCE_OFFLINE_SUPPRESS_SECONDS:
+                settled_at.pop(sid, None)
+
+        running = getattr(self, "running_groups", None)
+        running_set = {str(gid) for gid in running} if running is not None else None
+        changed = False
+
+        for key in list(pending):
+            item = pending[key]
+            if not isinstance(item, dict):
+                pending.pop(key, None)
+                changed = True
+                continue
+            if now < item.get("deadline", 0):
+                continue
+
+            if not self.config.get("enable_user_offline_notify", False):
+                pending.pop(key, None)
+                online_since.pop(key, None)
+                settled_at[key] = now
+                changed = True
+                continue
+
+            last_seen = item.get("last_seen_offline_at") or item.get("detected_at") or 0
+            age = now - int(last_seen)
+            if age > PRESENCE_SETTLE_FRESHNESS_SECONDS:
+                if age > PRESENCE_PENDING_MAX_STALE_SECONDS:
+                    # 长时间没有新鲜离线证据（API 持续失败/玩家已回归但基线未知）
+                    pending.pop(key, None)
+                    online_since.pop(key, None)
+                    changed = True
+                else:
+                    # 等下一轮新鲜快照；同时把复查轮询钳到 60 秒
+                    self._clamp_pending_recheck(key, now)
+                continue
+
+            pending.pop(key, None)
+            online_since.pop(key, None)
+            settled_at[key] = now
+            changed = True
+
+            for group_id, steam_ids in self.group_steam_ids.items():
+                gid = str(group_id)
+                if running_set is not None and gid not in running_set:
+                    continue
+                if not self.group_monitor_enabled.get(gid, True):
+                    continue
+                if key not in {str(sid) for sid in steam_ids}:
+                    continue
+                self._enqueue_presence(
+                    group_id,
+                    key,
+                    item.get("name") or key,
+                    item.get("detected_at") or now,
+                    "offline",
+                    item.get("online_minutes"),
+                )
+
+        if changed:
+            self._save_presence_state()
+
+    def _clamp_pending_recheck(self, key, now):
+        """待定因新鲜度不足被推迟时，把所有运行中监控群的复查轮询钳到 60 秒。"""
+        running = getattr(self, "running_groups", None)
+        running_set = {str(gid) for gid in running} if running is not None else None
+        for group_id, steam_ids in self.group_steam_ids.items():
+            gid = str(group_id)
+            if running_set is not None and gid not in running_set:
+                continue
+            if not self.group_monitor_enabled.get(gid, True):
+                continue
+            if key in {str(sid) for sid in steam_ids}:
+                next_poll = self.next_poll_time.setdefault(group_id, {})
+                self._clamp_recheck_poll(key, now, next_poll)
+
+    def _enqueue_presence(self, group_id, sid, player_name, event_time, kind, online_minutes):
+        """presence 通知入队，复用游戏通知的合并发送、去重与失败重试管线。"""
+        if not self.config.get("notify_send_text", True):
+            # 上线/下线是纯文本通知；文本关闭时没有可发送内容，直接丢弃
+            return
+        self._pending_end_notifications.setdefault(group_id, []).append(
+            {
+                "type": kind,
+                "sid": sid,
+                "name": player_name,
+                "event_time": event_time,
+                "online_minutes": online_minutes,
+            }
+        )

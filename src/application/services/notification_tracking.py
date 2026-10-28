@@ -9,12 +9,27 @@ from astrbot.api.message_components import Plain, Image
 from ...shared.fonts import resolve_font_path
 from ...shared.logging import logger
 from ...shared.utils.notify_session import is_sendable_group_session
+from ...shared.utils.quiet_hours import in_quiet_hours
+from ...presentation.formatters.status import format_play_duration
 from ...presentation.renderers.game_start import render_game_start
 from ...presentation.renderers.game_end import render_game_end
+from ...presentation.renderers.owned_game import render_owned_game
+from ...presentation.renderers.owned_games_batch import render_owned_games_batch
 
 
 class NotificationTrackingMixin:
     """游戏状态通知的路由、渲染、缓冲和延迟结算编排。"""
+
+    def _compact_cover_concurrency(self) -> int:
+        """简洁模式的封面并发数：复用 owned_games 服务的配置读取，缺服务时用默认值。"""
+        service = getattr(self, "owned_games", None)
+        getter = getattr(service, "_compact_cover_concurrency", None)
+        if callable(getter):
+            try:
+                return getter()
+            except Exception:
+                pass
+        return 4
 
     def _get_notify_sessions(self, group_id, sid):
         sessions = []
@@ -60,7 +75,41 @@ class NotificationTrackingMixin:
 
     async def _render_notification_image(self, noti):
         try:
-            if noti["type"] == "start":
+            if noti["type"] in ("online", "offline"):
+                # 上线/下线为纯文本推送，不渲染图片
+                return None
+            if noti["type"] == "owned_batch":
+                # 简洁模式：本轮新增合并成清单图；不取卡片详情，封面命中缓存即零网络
+                img_bytes = await render_owned_games_batch(
+                    self.data_dir, noti["sid"], noti["name"], noti.get("avatar_url"),
+                    items=noti.get("items") or [],
+                    page=noti.get("page") or 1,
+                    pages=noti.get("pages") or 1,
+                    owned_count=noti.get("owned_count") or 0,
+                    added_count=noti.get("added_count") or 0,
+                    added_at=noti.get("added_at"),
+                    page_size=noti.get("page_size") or 0,
+                    api_key=self.API_KEY, sgdb_api_key=self.SGDB_API_KEY,
+                    sgdb_api_base=self.SGDB_API_BASE, steam_store_base=self.STEAM_STORE_BASE,
+                    steam_api_base=self.STEAM_API_BASE, proxy=self.proxy,
+                    version=self._plugin_version,
+                    cover_concurrency=self._compact_cover_concurrency(),
+                )
+            elif noti["type"] == "owned":
+                if not noti.get("render", True):
+                    return None  # 超出单轮卡片上限的新增：仅文本，不渲染图片
+                img_bytes = await render_owned_game(
+                    self.data_dir, noti["sid"], noti["name"], noti.get("avatar_url"),
+                    noti.get("gameid"), noti.get("game") or "未知游戏",
+                    owned_count=noti.get("owned_count") or 0,
+                    card_data=noti.get("card_data"),
+                    added_at=noti.get("added_at"),
+                    api_key=self.API_KEY, sgdb_api_key=self.SGDB_API_KEY,
+                    sgdb_api_base=self.SGDB_API_BASE, steam_store_base=self.STEAM_STORE_BASE,
+                    steam_api_base=self.STEAM_API_BASE, proxy=self.proxy,
+                    version=self._plugin_version,
+                )
+            elif noti["type"] == "start":
                 status = noti.get("status", {})
                 avatar_url = status.get("avatarfull") or status.get("avatar")
                 superpower = self.superpower.get(noti["sid"])
@@ -96,14 +145,39 @@ class NotificationTrackingMixin:
             logger.error(f"渲染通知图片失败 ({noti.get('type')}, {noti.get('name')}): {e}")
             return None
 
+    @staticmethod
+    def _is_intentionally_unrendered(notification):
+        """该通知是否「本就不该出图」（区别于「渲染失败」）。
+
+        目前只有游戏库新入库族带 render 开关：详细模式超出单轮卡片上限的条目
+        会被显式标记 render=False，此时没有图片是设计行为，不是故障。
+        """
+        if notification.get("type") not in ("owned", "owned_batch"):
+            return False
+        return not notification.get("render", True)
+
     def _notification_event_key(self, notification, session):
         event_time = notification.get("start_time")
+        identifier = notification.get("gameid")
         if notification.get("type") == "end":
             event_time = notification.get("quit_time")
+        elif notification.get("type") == "owned":
+            event_time = notification.get("added_at")
+        elif notification.get("type") == "owned_batch":
+            # 合并清单没有单一 gameid：用页码占位，避免同批多页塌缩成同一个去重键。
+            # 元组形状保持 5 位不变，既有去重语义与测试断言不受影响。
+            event_time = notification.get("added_at")
+            identifier = "p{0}/{1}".format(
+                int(notification.get("page") or 1),
+                int(notification.get("pages") or 1),
+            )
+        elif event_time is None:
+            # 上线/下线通知用检测时刻作键，600 秒窗口内不同次的转换不被误去重
+            event_time = notification.get("event_time")
         return (
             str(session),
             str(notification.get("sid")),
-            str(notification.get("gameid")),
+            str(identifier),
             str(notification.get("type")),
             int(event_time) if event_time is not None else None,
         )
@@ -135,6 +209,13 @@ class NotificationTrackingMixin:
     async def _send_merged_notification(self, group_id, notifications):
         if not notifications:
             return []
+        if in_quiet_hours(getattr(self, "config", {}) or {}):
+            # 静默时段：只跳过播报，不打断轮询/记账；返回空失败列表等于「已消费」，
+            # pending 队列（含 owned_games 持久化队列）不会在静默结束后补发。
+            logger.info(
+                "静默时段跳过播报 (group_id=%s, 共 %s 条)", group_id, len(notifications)
+            )
+            return []
         session_notifications = {}
         for notification in notifications:
             targets = self._get_notify_sessions(group_id, notification["sid"])
@@ -160,6 +241,27 @@ class NotificationTrackingMixin:
             for notification in matched_notifications:
                 if notification["type"] == "start":
                     line = f"🟢【{notification['name']}】开始游玩 {notification['game']}\n"
+                elif notification["type"] == "owned":
+                    line = (
+                        f"📚【{notification['name']}】新入库 {notification['game']}"
+                        f"（当前共 {notification.get('owned_count') or 0} 款）\n"
+                    )
+                elif notification["type"] == "owned_batch":
+                    count = notification.get("added_count") or len(notification.get("items") or [])
+                    page = notification.get("page") or 1
+                    pages = notification.get("pages") or 1
+                    line = (
+                        f"📚【{notification['name']}】新入库 {count} 款"
+                        f"（当前共 {notification.get('owned_count') or 0} 款）\n"
+                    )
+                    if page == 1:
+                        line += f"第 {page}/{pages} 页\n"
+                elif notification["type"] == "online":
+                    line = f"🔵【{notification['name']}】已上线\n"
+                elif notification["type"] == "offline":
+                    minutes = notification.get("online_minutes")
+                    suffix = f"（本次在线 {format_play_duration(minutes)}）" if minutes is not None else ""
+                    line = f"🌑【{notification['name']}】已离线{suffix}\n"
                 else:
                     line = f"👋 {notification['name']} 不玩 {notification['game']}，游玩时间 {notification['duration_str']}\n"
                 if self.config.get("notify_send_text", True):
@@ -168,13 +270,27 @@ class NotificationTrackingMixin:
                 if img_path:
                     msg_chain.append(Image.fromFileSystem(img_path))
             if not msg_chain:
-                if self.config.get("notify_send_image", True) and not self.config.get("notify_send_text", True):
-                    for notification in matched_notifications:
-                        self._finish_notification(notification, session, success=False)
-                    return matched_notifications
+                retry = []
+                image_only = (
+                    self.config.get("notify_send_image", True)
+                    and not self.config.get("notify_send_text", True)
+                )
                 for notification in matched_notifications:
-                    self._finish_notification(notification, session, success=False)
-                return []
+                    if notification["type"] in ("online", "offline"):
+                        # 纯文本类型：文本关闭时没有可发送内容，按已处理丢弃，避免无限重试
+                        self._finish_notification(notification, session, success=True)
+                    elif image_only and self._is_intentionally_unrendered(notification):
+                        # 主动不渲染（超出单轮富卡上限等）且文本被用户关闭：
+                        # 这条本就没有可发送内容，不是发送失败，按已消费丢弃，
+                        # 否则会被误判成渲染失败并进入补发队列反复重试。
+                        self._finish_notification(notification, session, success=True)
+                    elif image_only:
+                        # 其他类型在“仅图片”模式下渲染失败，保留原有失败重试语义
+                        self._finish_notification(notification, session, success=False)
+                        retry.append(notification)
+                    else:
+                        self._finish_notification(notification, session, success=False)
+                return retry
             try:
                 await self.context.send_message(session, MessageChain(msg_chain))
             except Exception:

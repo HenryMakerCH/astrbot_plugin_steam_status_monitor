@@ -3,6 +3,7 @@ from ..shared.logging import logger
 from astrbot.api.event import filter, AstrMessageEvent
 import time
 import asyncio
+import json
 import os
 from ..application.services.monitor_admin import MonitorAdminService
 from ..application.services.monitor_control import MonitorControlService
@@ -14,11 +15,12 @@ from ..application.services.rank_view import RankViewService
 from ..application.services.achievement_monitor import AchievementMonitor
 from ..application.services.achievement_tracking import AchievementTrackingMixin
 from ..application.services.notification_tracking import NotificationTrackingMixin
+from ..application.services.owned_games import OwnedGamesService
 from ..application.services.session_quit import SessionQuitMixin
 from ..application.services.status_change_tracking import StatusChangeTrackingMixin
 from ..application.services.polling_tracking import PollingTrackingMixin
 from ..domain.monitoring import MonitorStateStore, StateBackedMonitorMixin
-from ..presentation.commands import monitor, ops, rank, store
+from ..presentation.commands import achievement_admin, monitor, ops, rank, store
 from ..presentation.renderers.superpower import SuperpowerPicker
 from ..presentation.web.admin_api import WebAdminAPI
 from ..infrastructure.persistence.plugin_data import PersistenceMixin
@@ -50,7 +52,7 @@ class SteamStatusMonitorV3(
             logger.error("当前插件已在运行中。请重启astrbot而非重载插件")
             return
         self._ssm_running = True
-        self._plugin_version = "4.9.2"
+        self._plugin_version = "4.12.0"
         self.context = context
         # 分群管理：所有状态数据均以 group_id 为 key
         self.group_steam_ids = {}         # {group_id: [steamid, ...]}
@@ -64,6 +66,11 @@ class SteamStatusMonitorV3(
         apply_runtime_config(self, config)
         self.price_candidates = PriceCandidateCache()
         self.next_poll_time = {}  # {group_id: {steamid: next_time}}
+        # presence 运行时状态必须早于 _load_persistent_data 初始化：
+        # 即使加载过程异常，轮询/结算路径也不会因属性缺失而崩溃。
+        self._presence_online_since = {}
+        self._presence_pending_offline = {}
+        self._presence_settled_offline_at = {}
         # 数据持久化目录：统一到 AstrBot 规范的 data/plugin_data/<plugin_name>/；
         # 升级后首次启动自动迁移旧目录 data/steam_status_monitor/ 的数据（仅一次，旧目录保留作备份）
         from ..infrastructure.persistence.data_dir import ensure_plugin_data_dir
@@ -89,7 +96,6 @@ class SteamStatusMonitorV3(
             )
         self.achievement_poll_tasks = {}  # {(group_id, sid, gameid): asyncio.Task}
         self.achievement_snapshots = {}   # {(group_id, sid, gameid): [成就列表]}
-        self.achievement_blacklist = set()  # 新增：成就查询黑名单
         self.achievement_fail_count = {}    # 新增：成就查询失败计数
         # --- 新增：重启后自动推送 ---
         self.running_groups = set()  # 正在运行的群号集合
@@ -148,6 +154,9 @@ class SteamStatusMonitorV3(
         self._load_bind_data()
         # --- 通知合并缓冲区：SessionService 将开始/结束通知写入此队列，由主轮询统一 flush ---
         self._pending_end_notifications = {}  # {group_id: [notification_dict, ...]}
+        # --- 游戏库新入库播报：独立服务 + 独立后台 task（默认 30 分钟一轮，不阻塞主轮询） ---
+        self.owned_games = OwnedGamesService(self)
+        self._owned_games_task = asyncio.create_task(self.owned_games.run_loop())
         # --- AstrBot Plugin Pages 管理后台 ---
         self.web_api = WebAdminAPI(self)
         self.web_api.register_routes(context)
@@ -164,6 +173,7 @@ class SteamStatusMonitorV3(
             getattr(self, '_achievement_blacklist_verify_task', None),
             getattr(self, '_itad_http_client_task', None),
             getattr(self, '_steam_store_http_client_task', None),
+            getattr(self, '_owned_games_task', None),
         ):
             if t and not t.done():
                 t.cancel()
@@ -194,6 +204,12 @@ class SteamStatusMonitorV3(
         # 重置运行标志，允许下次重载正常初始化
         self._ssm_running = False
 
+    @property
+    def achievement_blacklist(self):
+        """只读别名：与 AchievementMonitor 的持久化名单同源，消除双集合不同步。"""
+        monitor = getattr(self, "achievement_monitor", None)
+        return monitor.achievement_blacklist if monitor is not None else set()
+
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("steam on")
     async def steam_on(self, event: AstrMessageEvent):
@@ -214,6 +230,28 @@ class SteamStatusMonitorV3(
     async def steam_delid(self, event: AstrMessageEvent, steamid: str, group_id_param: str = ""):
         '''从监控组删除SteamID；支持好友码/链接；可选传群号跨群删除：/steam delid [SteamID/好友码/链接] [群号]'''
         async for result in monitor.delid(self, event, steamid, group_id_param):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("steam BL", alias={"steam bl"})
+    async def steam_blacklist(self, event: AstrMessageEvent, action: str = "", value: str = ""):
+        '''强制黑名单：/steam BL [AppID...] 加入并切黑名单；list 查看；del [AppID...] 删除'''
+        async for result in ops.blacklist(self, event, action, value):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command(
+        "steam achievement_blacklist",
+        alias={
+            "steam achievement_bl",
+            "steam achbl",
+            "steam ABL",
+            "steam abl",
+        },
+    )
+    async def steam_achievement_blacklist(self, event: AstrMessageEvent, action: str = "", value: str = ""):
+        '''查看/管理成就查询黑名单（AppID/游戏名/时间/原因）；别名 achievement_bl / achbl / ABL / abl'''
+        async for result in achievement_admin.achievement_blacklist(self, event, action, value):
             yield result
 
     @filter.permission_type(filter.PermissionType.MEMBER)
@@ -384,6 +422,13 @@ class SteamStatusMonitorV3(
             yield result
 
     @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("steam test_owned_render")
+    async def steam_test_owned_render(self, event: AstrMessageEvent, steamid: str, appid: int, mode: str = ""):
+        '''测试新入库播报富卡渲染（steam test_owned_render [steamid] [appid] [plain]）'''
+        async for result in ops.test_owned_render(self, event, steamid, appid, mode):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("steam fonts")
     async def steam_fonts(self, event: AstrMessageEvent, param: str = ""):
         '''字体包管理；参数: download=立即下载, clean=清理缓存'''
@@ -431,3 +476,32 @@ class SteamStatusMonitorV3(
         '''将当前群/指定群从SteamID的联动推送组移除；可传 target_group 指定群号'''
         async for result in monitor.delpush_group(self, event, steamid, target_group):
             yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("steam syncgames")
+    async def steam_syncgames(self, event: AstrMessageEvent, param: str = ""):
+        '''手动同步本群玩家游戏库（默认仅更新基线；syncgames now 立即播报新增）'''
+        async for result in ops.syncgames(self, event, param):
+            yield result
+
+    @filter.permission_type(filter.PermissionType.MEMBER)
+    @filter.command("steam mygames")
+    async def steam_mygames(self, event: AstrMessageEvent, query: str = ""):
+        '''查询本人绑定的 Steam 游戏库（数量 / 最近入库 / 关键词检索）'''
+        async for result in ops.mygames(self, event, query):
+            yield result
+
+    @filter.llm_tool(name="steam_owned_games")
+    async def steam_owned_games(self, event: AstrMessageEvent, query: str = "", offset: int = 0, limit: int = 20) -> str:
+        '''查询当前消息发送者本人绑定的 Steam 游戏库（游戏总数 / 关键词检索 / 最近入库记录）。
+        只能查询发送者自己的绑定，不能查询其他用户，也不接受指定其他 QQ 或 SteamID。
+
+        Args:
+            query(string): 游戏名关键词；留空时返回游戏库总数与最近入库记录
+            offset(number): 分页起始位置，默认 0
+            limit(number): 每页返回数量（1-50），默认 20
+        '''
+        result = await self.owned_games.list_for_sender(
+            event.get_sender_id(), query=query, offset=offset, limit=limit,
+        )
+        return json.dumps(result, ensure_ascii=False)

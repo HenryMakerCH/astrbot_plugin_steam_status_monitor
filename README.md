@@ -29,6 +29,8 @@
 - **AstrBot 内置管理页**：仪表盘、群聊、绑定、每日推送和权限管理直接集成在 AstrBot WebUI，无需额外端口
 - **权限配置同步**：内置管理页的“指令权限”直接读写 AstrBot 框架配置，并同步当前运行时权限
 - **命令层分层**：`/steam` 指令仍由 AstrBot 注册；名单、启停、价格、排行规则在应用服务，命令文件只做解析和回文。对外指令名、权限和数据目录不变
+- **游戏库新入库播报**（默认关闭）：独立后台任务默认每 30 分钟检测被监控玩家 Steam 库新增游戏，播报「新入库」卡片（含玩家头像、头像框、名称、游戏库总数、商店描述与评价）；首轮只建基线不播报，支持抖动抑制、失败补发与每日 API 预算保护
+- **游戏库查询**：`/steam syncgames [now]` 手动同步本群游戏库；`/steam mygames [关键词]` 与群内 AI 助手（`steam_owned_games` 工具）查询本人绑定游戏库（仅限本人）
 
 ## 默认轮询间隔说明（智能轮询模式）
 | 玩家最近在线时间      | 轮询间隔 |
@@ -62,18 +64,39 @@
 | `smart_poll_intervals` | 智能轮询各状态间隔（分钟，逗号分隔） | `1,3,5,10,20,30` |
 | `retry_times` | Steam API 请求重试次数 | 3 |
 | `max_group_size` | 单群最大监控人数 | 20 |
+| `game_filter_mode` | 游戏过滤模式（全部游戏/白名单/黑名单，修改后立即生效） | 全部游戏 |
+| `game_filter_ids` | 过滤 AppID 列表（逗号分隔，修改后立即生效） | 空 |
 | `detailed_poll_log` | 详细轮询日志开关 | true |
 | `enable_achievement_poll` | 成就轮询推送开关 | true |
 | `enable_steam_style` | Steam列表渲染风格开关（开启=steam风格；关闭=原卡片风格） | true |
 | `enable_game_end_notify` | 游戏结束通知开关 | true |
+| `enable_game_start_notify` | 游戏开始通知开关（关闭后仅记录时长） | true |
+| `enable_network_fluctuation_notify` | 网络波动通知开关（纯文本） | true |
+| `enable_user_online_notify` | 用户上线通知开关（纯文本；默认关闭；检测延迟约 3–30 分钟） | false |
+| `enable_user_offline_notify` | 用户下线通知开关（纯文本，附本次在线时长；默认关闭；180 秒防抖） | false |
 | `notify_send_image` | 通知发送图片开关 | true |
 | `notify_send_text` | 通知发送文本开关 | true |
+| `notify_quiet_hours` | 静默时段（免打扰），格式 `起始小时,结束小时`（整点 0–23）；`0,8` = 00:00–07:59，`23,8` = 23:00–次日 07:59，`0,0` 或两值相同 = 关闭；非法值按关闭处理。仅跳过播报，轮询与数据记录照常，命中即丢弃不补发 | `0,0` |
 | `enable_proxy` | 启用网络代理 | false |
 | `proxy_url` | 代理链接（如 `http://127.0.0.1:7890`） | 空 |
 | `font_download_enabled` | 启动后自动下载 CJK 字体包 | true |
 | `font_pack_url` | 自定义字体包 URL（须 https，仍按清单校验） | 空 |
 | `font_download_timeout_sec` | 字体包下载超时（秒） | 600 |
+| `enable_owned_games_notify` | 游戏库新入库播报开关（首次同步只建基线不播报） | false |
+| `owned_games_poll_interval` | 游戏库轮询间隔（秒，最小 600） | 1800 |
+| `owned_games_include_free` | 游戏库是否包含玩过的免费游戏 | true |
+| `owned_games_max_per_notify` | 单轮最多渲染卡片数（1-20，超出仅文本列出，仅详细模式生效） | 5 |
+| `owned_games_notify_style` | 新入库播报样式：`auto` 按数量自动选 / `detailed` 逐款富卡 / `compact` 合并清单图 | auto |
+| `owned_games_auto_compact_threshold` | auto 模式下改用合并图的款数阈值（1-20） | 3 |
+| `owned_games_compact_page_size` | 简洁模式每页游戏数（1-20，超出自动分页） | 8 |
+| `owned_games_compact_max_pages` | 简洁模式单轮最多页数（1-10，超出本轮不播报但记入最近入库） | 3 |
+| `owned_games_compact_cover_concurrency` | 简洁模式封面下载并发（1-8） | 4 |
+| `owned_games_daily_budget` | 游戏库每日 API 预算（按凌晨 4 点分界） | 3000 |
+| `owned_games_ignore_appids` | 忽略的 AppID（逗号分隔，入库不播报） | 空 |
+| `owned_games_grace_days` | 抖动抑制窗口（天，免费周末等临时入库） | 7 |
 
+> 上线/下线推送默认关闭（opt-in）。离线通知需连续 180 秒确认，窗口内重新上线不推送；上线检测受轮询间隔影响，通常有 3–30 分钟延迟。同一玩家多群监控时，待定按 SteamID 全局合并，不会重复计时或重复推送。
+>
 > 带「修改后重启AstrBot生效」标注的配置项需重启后生效。
 
 ## 注意事项
@@ -96,6 +119,7 @@
 ![WebUI 管理后台](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/assets/images/webui.png)
 ![List 玩家列表](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/assets/images/list.png)
 ![价格查询示例](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/assets/images/price.png)
+![游戏库新入库播报](https://raw.githubusercontent.com/Maoer233/astrbot_plugin_steam_status_monitor/main/assets/images/owned_games.png)
 
 
 ## QQ 官方机器人后台配置面板
@@ -174,9 +198,14 @@ AstrBot 只扫描 `Star` 子类上的命令装饰器，注册桩必须留在插�
 - `/steam set [参数] [值]` 设置配置参数（如 `/steam set poll_interval_sec 30`）
 - `/steam addid [SteamID/链接/好友码] [@用户] [备注名]` 添加玩家并可选 **@用户** 绑定（通过 @ 群成员完成QQ绑定，支持多种格式）
 - `/steam delid [SteamID/好友码/链接]` 从本群监控列表删除SteamID
+- `/steam BL [AppID]` 强制加入游戏黑名单（逗号/全角逗号/空格分隔多个，自动切换为黑名单模式，立即生效）
+- `/steam BL list` 查看当前过滤模式与黑名单
+- `/steam BL del [AppID]` 从黑名单删除（支持多个 AppID）
 - `/steam push_group [SteamID]` 添加id到联动推送的副群（轮询一次通知多个群聊）
 - `/steam delpush_group [SteamID]` 删除id联动推送的副群
 - `/steam openbox [SteamID/好友码/链接]` 查看指定SteamID的全部详细信息
+- `/steam syncgames [now]` 手动同步本群玩家游戏库（默认仅更新基线不播报；`now` 立即播报本轮新增）
+- `/steam mygames [关键词]` 查询本人绑定的游戏库（数量 / 最近入库 / 关键词检索，仅限本人）
 - `/steamwho @用户` / `/在干嘛 @用户`  即时查询 @绑定玩家的 Steam 状态
 - `/steam rank [天数]` 查看本群游戏时长排行榜（默认今日，可指定天数）
 - `/steam allrank [天数]` 查看所有群游戏时长排行榜（默认今日，可指定天数）
@@ -184,6 +213,11 @@ AstrBot 只扫描 `Star` 子类上的命令装饰器，注册桩必须留在插�
 - `/steam rs` 清除所有状态并初始化
 - `/steam achievement_on` 开启本群Steam成就推送
 - `/steam achievement_off` 关闭本群Steam成就推送
+- `/steam achievement_blacklist` 查看成就查询黑名单（表格图片，AppID / 游戏名 / 加入时间 / 原因，表格图片一图输出全部条目；别名 `achievement_bl`、`achbl`、`ABL`、`abl`，均需 `/steam` 前缀）
+- `/steam achievement_blacklist list text [页码]` 纯文本分页查看（默认第 1 页，每页 20 条）
+- `/steam achievement_blacklist names` 批量补全缺失的游戏名（按批查询 Steam 商店，只填空缺、不覆盖已有名称）
+- `/steam achievement_blacklist del [AppID]` 删除单条/多条（逗号或空格分隔）
+- `/steam achievement_blacklist del all` 清空全部（**不二次确认，慎用**）
 - `/steam test_achievement_render [steamid] [gameid] [数量]` 测试成就图片渲染
 - `/steam test_game_start_render [steamid] [gameid]` 测试开始游戏图片渲染
 - `/steam清除缓存` 清除所有头像、封面图等图片缓存
@@ -192,12 +226,12 @@ AstrBot 只扫描 `Star` 子类上的命令装饰器，注册桩必须留在插�
 ## 依赖
 - Python 3.7+
 - httpx
-- Pillow
+- Pillow >= 9.5, < 14（与 AstrBot 4.29+ 内置的 Pillow 13 共用同一份，无需降级）
 - AstrBot >= 4.24.2
 
 ### 依赖安装方法
 如果显示缺少依赖，你可以尝试下载以下工具来进行修复
-pip install httpx pillow
+pip install "httpx[socks]" "Pillow>=9.5,<14"
 
 可以添加QQ：1912584909 或加交流群：881855879 来反馈功能和建议 闲聊也欢迎喵~
 
@@ -210,11 +244,61 @@ pip install httpx pillow
 > 如果本项目对您的生活 / 工作产生了帮助，或者您关注本项目的未来发展，请给项目 Star，这是我维护这个开源项目的动力 ❤️。
 
 ## 更新记录
-
-- V4.9.2-fork（离线 / 内网适配，本 fork 新增）
+- V4.12.0-fork（离线 / 内网适配，本 fork 新增；基于上游 V4.12.0）
   - **页面资源本地化**：`echarts@5.5.0` 与 `@mdi/font@7.3.67`（css + woff2）打包进 `pages/steam-monitor/vendor/`，`index.html` 改为相对路径引用，不再依赖 `cdn.jsdelivr.net`。修复无外网环境下管理后台报 `echarts is not defined`、图表空白的问题。
   - **头像同源化**：`/players/avatar/<steamid>` 优先把本地缓存（`<data_dir>/avatars/<steamid>.jpg`）编码成 base64 data URL 返回，避免浏览器直连 `avatars.steamstatic.com`（国内常被墙）导致头像空白；本地无缓存时才回退 Steam 原始 URL。
   - 改动文件：`pages/steam-monitor/index.html`、`src/presentation/web/admin_api.py`，新增 `pages/steam-monitor/vendor/`。
+
+- V4.12.0（2026/10/28）
+  - **修复评价摘要全部失效（Issue #65）**：Steam 已将商店旧接口 `/appreviews/<appid>?json=1` 标记废弃，现在对所有 AppID 一律返回 302 跳转到商店首页（跟随重定向只能拿到 HTML），导致新入库卡片的评价区静默缺失、日志报 `UPSTREAM_ERROR`。已迁移至 `IUserReviewsService/GetAppReviews/v1`（免 API Key），评分档位改用 Steam 官方 `review_score` 加权口径，与商店页面文案一致；下架或非法 AppID 返回的空响应按「暂无评价」降级而不是报错。
+  - **新配置 `owned_games_notify_style`（Issue #66）**：默认 `auto`，按本轮新增数量自动选择——新增不足 3 款时逐款发富卡（单款时信息最全），达到 3 款及以上自动合并成清单图，避免连续刷屏。也可固定为 `detailed`（始终逐款富卡）或 `compact`（始终合并）。简洁模式顶部显示头像、名称、本轮新增数量与游戏库总数，每行封面缩略图 + 游戏名，超过每页条数自动分页并标注页码，序号跨页连续；不再请求商店详情与双语言评价，封面优先命中本地缓存，显著降低 API 消耗。
+  - **新配置**：`owned_games_auto_compact_threshold`（自动切换阈值，默认 3）、`owned_games_compact_page_size`（每页游戏数，默认 8）、`owned_games_compact_max_pages`（单轮最多页数，默认 3）、`owned_games_compact_cover_concurrency`（封面并发，默认 4）。五项均可在 WebUI 设置页修改，也支持 `/steam set` 即时切换。
+  - **修复仅图片模式的误判（Issue #66 提到的边界情况）**：超出单轮富卡上限的条目本就不出图，若同时关闭文本推送，旧逻辑会把「本就没有可发送内容」误判为渲染失败并塞进补发队列重试 5 次后丢弃。现在把「主动不渲染」与「渲染失败」区分开，前者按已消费处理，后者保留原有重试语义。
+  - **存储兼容**：`owned_games.json` 的待补发记录按 `kind` 分派归一化，旧数据（无 `kind`、含 `card_data`）字段完整保留、落盘字节不变；简洁模式的分页记录可跨重启续发，且失败只补发失败页。
+
+- V4.11.4（2026/10/26）
+  - **修复 Pillow 版本冲突（Issue #62）**：依赖上界由 `<13` 放宽至 `<14`，兼容 AstrBot 4.29+ 内置的 Pillow 13，不再因「插件要求降级 / 核心保护拦截」安装失败；已用 Pillow 13.0.0 独立目录覆盖验证全部渲染路径。
+  - **新配置 `notify_quiet_hours`（Issue #60）**：静默时段免打扰，格式 `起始小时,结束小时`（整点），支持跨午夜（如 `23,8`）。命中时跳过所有自动播报（开始/结束、上下线、网络波动、新入库、成就、每日排行榜），**轮询与数据统计照常**，且通知直接丢弃、不在静默结束后补发；`0,0` 为关闭（默认）。手动 `/steam rank_on test` 不受影响。
+  - **WebUI**：插件自带设置页新增「静默时段」输入框，保存后即时生效。
+
+- V4.11.3（2026/10/19）
+  - **新指令 `/steam achievement_blacklist`（管理员）**：查看成就查询黑名单，逐条显示 AppID、游戏名、加入时间与原因；默认渲染为深色单栏表格图片，一张图输出全部条目，另支持 `list text` 纯文本分页、`names` 批量补全缺失游戏名、按 AppID 删除、`del all` 清空。别名 `achievement_bl` / `achbl` / `ABL` / `abl`。
+  - **数据升级**：`achievement_blacklist.json` 升级为 v2（含 game_name / added_at / reason / source），首次启动自动迁移并备份 `.bak-v1`；历史条目如实显示「时间未知 / 历史遗留」，并从 `play_records.json`、`session_records.json` 离线回填游戏名。
+  - **修复**：消除插件级与 `AchievementMonitor` 两套黑名单集合不同步的问题；「当天失败 10 次」拉黑现在会落盘并在重启后保留。
+  - **校验保护**：一次性历史校验跳过 `source=manual` 条目，避免手动拉黑被自动移除。
+
+- V4.11.2（2026/10/19）
+  - **启动游戏卡**：新增 `GameId:<id>` 徽标，位于卡片右下角最底部、与版本号上下堆叠，9px Medium 低饱和绿；右下角版本号水印改为 7px Medium 低饱和绿并上移，修复旧版颜色过暗（深色背景上对比度约 1.1:1）导致的看不清问题。
+  - **新指令 `/steam BL`（管理员）**：强制黑名单管理。`/steam BL 730,431960` 加入并自动切换为黑名单模式；`/steam BL list` 查看当前模式与名单；`/steam BL del 730` 删除。支持逗号、全角逗号、空格分隔，自动去重与前导零归一化，修改后立即生效，无需重启。
+  - **修复**：黑白名单读取现支持全角逗号与空格分隔，并按数值归一化比较，`0730` 与 `730` 不再漏匹配。
+  - **文案**：修正 `_conf_schema.json` 中黑白名单两项「修改后重启」的过时说明为「修改后立即生效」。
+
+- V4.11.1（2026/10/19）
+  - **用户上下线推送（新功能，默认关闭 / opt-in）**：监控玩家上线/离线时推送「已上线 / 已离线」纯文本通知（`enable_user_online_notify` / `enable_user_offline_notify`，修改后立即生效）。基于轮询快照的 `personastate` 差分实现，与游戏会话状态机解耦；上线推送与同一轮“开始游玩”互斥，避免同一事件打扰两次。
+  - **180 秒离线防抖**：检测到离线后先进入 180 秒确认窗，窗口内重新上线不推送；待定状态跨重启保留，重启后由首轮快照确认仍离线才结算。窗口内该玩家的复查轮询自动钳到 60 秒。
+  - **多群合并**：同一玩家被多个群监控时，离线待定按 SteamID 全局合并，保留最早检测时间、截止时间与在线时长；后检测的群只刷新观测时间，不覆盖先到群的结果。
+  - **检测延迟**：上线/下线依赖轮询快照，通常有 3–30 分钟延迟；离线结算额外叠加 180 秒确认窗。
+  - **修复**：多条上线/下线文本合并时缺少换行；启动基线 `skip_push` 误删其他群待定；结算早于本轮快照导致窗口末尾「离线+上线」双推；关闭文本、仅开图片时纯文本 presence 通知无限重试；未 `/steam on` 的群收到离线通知；结算后最多 300 秒才落盘。
+  - **清理**：删除玩家、删除群、清空全部 ID、`/steam rs` 时同步清理 presence 运行时状态；联动推送（`push_groups`）共用 `online_since` 作为上线事件去重键。
+  - **已知边界**：Steam 隐身（invisible）状态在 API 下表现为离线，无法识别；隐身但正在游戏时不会误报下线。
+  - **致谢**：上线/下线推送由社区贡献者 [@Katsukizuki](https://github.com/Katsukizuki) 提交（[PR #59](https://github.com/Maoer233/astrbot_plugin_steam_status_monitor/pull/59)）；发布版将其调整为默认关闭（opt-in），并修正多群合并、重启续期与重复推送等边界问题。
+
+- V4.10.1（2026/10/17）
+  - **游戏库新入库播报（新功能，默认关闭）**：独立后台任务默认每 30 分钟（可配）检测被监控玩家 Steam 库新增游戏并播报「新入库」卡片；新玩家首轮只建立基线不播报，重启后自动补播停机期间的新增；`/steam set enable_owned_games_notify true` 可即时开启。
+  - **富卡设计**：卡片含玩家头像、头像框、名称、游戏库总数，以及商店页面描述与双语言评价（复用价格查询数据管线与缓存）；商店数据获取失败自动降级为精简卡片；每款新增独立发送一条消息（单轮最多渲染 5 张卡片，超出仅文本列出）。
+  - **轻量存储**：仅存 appid 集合与必要元数据（`owned_games.json`），单文件一轮一次原子写，无逐玩家重复写放大；游戏名与封面按需懒加载并复用本地缓存，不重复落盘。
+  - **稳健性**：「游戏详情」私密返回不误判空库；免费周末等抖动用 grace 窗口抑制；失败播报按会话粒度持久化补发、重启可续播；HTTP 429 全局退避 + 每日 API 预算保护；与主状态轮询完全解耦，不阻塞 bot 运行。
+  - **运行日志**：任务启动摘要（间隔 / 开关 / 已加载玩家数）、每轮同步心跳（含「无新增播报」）、按玩家列出检出明细、播报送达 / 补发回执、限流退避与预算耗尽告警，运行状态可全程从日志追踪。
+  - **新指令与新工具**：`/steam syncgames [now]`（管理员）、`/steam mygames [关键词]`（成员）、AI 工具 `steam_owned_games`（仅允许查询发送者本人绑定）、测试命令 `/steam test_owned_render [steamid] [appid] [plain]`。
+  - **新功能**（用户平均活跃热度图）：热力图页新增按钮，点击后按 10 分钟粒度展示 144 个时段的平均同时游戏人数（柱）+ 单日峰值（折线）双 Y 轴；自然日 00:00–23:50 对齐、同人同时段去重，周期自动截到最近 90 天（会话记录保留期），仅统计已结束的游戏会话。
+  - **优化**（甘特图）：按自然日分栏 + 日期/星期标签（修复 7/30 天视图 X 轴只显示时分、日期混淆的问题）、今天列高亮、圆角会话条与 6px 最小宽度、图例按总时长 Top10 +「其他」并支持点击筛选、顶部概览与深色缩放条。
+  - **修复**（顺带）：主群状态晋升时迁移后清理原主群残留状态并强制落盘；补齐提交 39c5b49 引入后从未通过的 4 个晋升状态迁移测试，并将 1 条过时测试更新为晋升语义。
+  - **修复**（排行榜图片）：修复 30 天数据下排行榜图片报 `x1 must be greater than or equal to x0` 的问题——分段进度条改为最大余数法分配像素，保证每段非负且总和恰为可用宽度；每位玩家最多展示 Top15 款游戏（其余合并为「其他」），避免超长卡片与内存峰值。
+  - **修复**（WebUI 时长显示）：热力图「累计活跃 / 当日累计 / 贡献玩家 / 周期排行」、仪表盘热门游戏、甘特图会话提示、个人页日历与游戏占比提示统一改为「小时 + 整数分钟」显示，消除浮点长尾（如 `3222 小时 0.949999999534339 分钟` → `3222 小时 1 分钟`、`49 小时 2.88999999998727 分钟` → `49 小时 3 分钟`）；后端统计接口的分钟字段统一保留 2 位小数，防止历史数据浮点尾数外泄到未来页面。
+  - **致谢**：本功能设计思路参考社区 fork（AdrokEe/astrbot_plugin_steam_status_monitor），实现已重写并修正其写放大、隐私误判、任务静默退出等问题。
+
+- V4.9.3（2026/10/15）
+  - **成就播报精简**：移除成就通知文字中的成就名，仅保留播报前缀与成就图片，使群消息展示更清爽。
 
 - V4.9.2（2026/09/29）
   - **图片裁剪异步化**：`crop_image_auto` 的远端图片下载改为 httpx 异步（`fetch_image`），移除同步 `requests` 依赖（`requirements.txt` 同步移除），避免阻塞事件循环。

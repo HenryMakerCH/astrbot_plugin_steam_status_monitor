@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Tuple
 from ...domain.monitoring.game_filter import should_skip_game
 from ...domain.monitoring.session import PlayingSession, apply
 from ...presentation.formatters.status import format_play_duration
+from ...shared.utils.quiet_hours import in_quiet_hours
 
 
 SessionKey = Tuple[str, str]
@@ -393,7 +394,8 @@ class SessionService:
         if monitor is None:
             return
         achievements = await monitor.get_player_achievements(
-            plugin.API_KEY, session.group_id, session.sid, session.gameid
+            plugin.API_KEY, session.group_id, session.sid, session.gameid,
+            game_name=game_name,
         )
         plugin.achievement_snapshots[key] = list(achievements or [])
         try:
@@ -409,6 +411,9 @@ class SessionService:
     def _on_resumed(self, session: PlayingSession, *, player_name, skip_push):
         plugin = self._plugin
         if skip_push or not plugin.config.get("enable_network_fluctuation_notify", True):
+            return
+        if in_quiet_hours(getattr(plugin, "config", {}) or {}):
+            # 静默时段：网络波动直发（见下方 _notify）同样不推，避免夜间反复响铃
             return
         # 黑白名单过滤：网络波动提示与游戏开始/结束播报一致，黑名单游戏不再推送波动提示
         if self._skip_game(session.gameid):

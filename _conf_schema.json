@@ -102,6 +102,18 @@
     "hint": "开启后当检测到网络波动时发送纯文本提醒，关闭则不发送（修改后重启AstrBot生效）",
     "default": true
   },
+  "enable_user_online_notify": {
+    "description": "用户上线通知开关",
+    "type": "bool",
+    "hint": "默认关闭。开启后监控玩家从离线变为在线时推送「已上线」纯文本通知；同一轮检测到开始游玩时不再重复推送。上线检测受轮询间隔影响，通常有 3–30 分钟延迟（修改后立即生效）",
+    "default": false
+  },
+  "enable_user_offline_notify": {
+    "description": "用户下线通知开关",
+    "type": "bool",
+    "hint": "默认关闭。开启后监控玩家从在线变为离线时推送「已离线」纯文本通知（附本次在线时长）；离线需连续 180 秒确认，窗口内回归不推送。Steam隐身状态无法识别（修改后立即生效）",
+    "default": false
+  },
   "notify_send_image": {
     "description": "通知发送图片开关",
     "type": "bool",
@@ -113,6 +125,12 @@
     "type": "bool",
     "hint": "勾选则发送文字说明；可与发送图片同时勾选，两项都勾选=图文一起发（修改后重启AstrBot生效）",
     "default": true
+  },
+  "notify_quiet_hours": {
+    "description": "静默时段（免打扰）",
+    "type": "string",
+    "hint": "格式「起始小时,结束小时」，整点 0-23：0,8 = 00:00–07:59 不播报；23,8 = 23:00–次日 07:59 不播报；0,0 或两值相同 = 关闭（默认）。只跳过播报，轮询与在线时长统计照常；命中时通知直接丢弃，静默结束后不会补发；非法值按关闭处理。手动 /steam rank_on test 不受影响。时间基准为服务器本地时间；WebUI 设置页保存后即时生效",
+    "default": "0,0"
   },
   "enable_proxy": {
     "description": "启用网络代理",
@@ -263,14 +281,14 @@
     "default": 0
   },
   "game_filter_mode": {
-    "description": "游戏过滤模式 -修改后重启AstrBot生效",
+    "description": "游戏过滤模式 -修改后立即生效（可用 /steam BL 管理）",
     "type": "string",
     "hint": "全部游戏=监控所有；白名单=仅播报列表中的游戏；黑名单=列表中的游戏不播报",
     "default": "全部游戏",
     "enum": ["全部游戏", "白名单", "黑名单"]
   },
   "game_filter_ids": {
-    "description": "过滤游戏ID列表 -修改后重启AstrBot生效",
+    "description": "过滤游戏ID列表 -修改后立即生效（可用 /steam BL 管理）",
     "type": "string",
     "hint": "逗号分隔 gameid，如 4315770,431960",
     "default": ""
@@ -286,5 +304,78 @@
     "type": "int",
     "hint": "每日自动推送排行榜的分钟数，默认30（即8:30推送）",
     "default": 30
+  },
+  "enable_owned_games_notify": {
+    "description": "游戏库新入库播报开关",
+    "type": "bool",
+    "hint": "开启后检测到被监控玩家游戏库新增游戏时推送卡片；首次同步只建立基线不播报；也可用 /steam set enable_owned_games_notify true 即时切换",
+    "default": false
+  },
+  "owned_games_poll_interval": {
+    "description": "游戏库轮询间隔（秒）-修改后重启AstrBot生效",
+    "type": "int",
+    "hint": "游戏库独立轮询间隔，默认 1800 秒（30 分钟），最小 600 秒；与主状态轮询分开一条独立路径",
+    "default": 1800
+  },
+  "owned_games_include_free": {
+    "description": "游戏库包含免费游戏",
+    "type": "bool",
+    "hint": "是否包含玩过的免费游戏（include_played_free_games），默认开启",
+    "default": true
+  },
+  "owned_games_max_per_notify": {
+    "description": "单轮最多渲染卡片数",
+    "type": "int",
+    "hint": "单轮每位玩家最多渲染几张新入库卡片（1-20），超出的新增只发文本；默认 5",
+    "default": 5
+  },
+  "owned_games_daily_budget": {
+    "description": "游戏库每日API预算",
+    "type": "int",
+    "hint": "每日游戏库相关 Steam API 调用上限（按凌晨4点分界），超出暂停到次日；默认 3000",
+    "default": 3000
+  },
+  "owned_games_ignore_appids": {
+    "description": "游戏库忽略的AppID",
+    "type": "string",
+    "hint": "逗号分隔 appid，这些游戏入库时不播报（如工具/测试软件），默认空",
+    "default": ""
+  },
+  "owned_games_grace_days": {
+    "description": "游戏库抖动抑制窗口（天）",
+    "type": "int",
+    "hint": "免费周末等临时入库又移除的游戏，在此窗口内重现不重复播报；默认 7 天",
+    "default": 7
+  },
+  "owned_games_notify_style": {
+    "description": "游戏库新入库播报样式",
+    "type": "string",
+    "hint": "auto=按本轮新增数量自动选择（默认，达到下方阈值用合并图，否则逐款富卡）；detailed=始终逐款富卡（每款需请求商店详情与评价，API 消耗较高）；compact=始终合并为清单图（仅游戏名+封面缩略图，按每页条数分页）。也可用 /steam set owned_games_notify_style compact 即时切换",
+    "default": "auto",
+    "enum": ["auto", "detailed", "compact"]
+  },
+  "owned_games_auto_compact_threshold": {
+    "description": "自动切换合并图的款数阈值",
+    "type": "int",
+    "hint": "样式为 auto 时生效：本轮新增达到或超过这个款数就用合并清单图，少于它则逐款发富卡（1-20）。默认 3，即一次入库 3 款及以上自动合并成一张图",
+    "default": 3
+  },
+  "owned_games_compact_page_size": {
+    "description": "简洁图片每页游戏数",
+    "type": "int",
+    "hint": "compact 样式下单张图片最多列出几款游戏（1-20），超出一页自动分页；默认 8。注意与「单轮最多渲染卡片数」是两个独立配置：前者只影响简洁模式的每页行数，后者只影响详细模式的富卡数量",
+    "default": 8
+  },
+  "owned_games_compact_max_pages": {
+    "description": "简洁模式单轮最多页数",
+    "type": "int",
+    "hint": "compact 样式下单轮最多推送几张分页图（1-10），超出部分本轮不播报但仍记入最近入库；用于防止一次入库上百款时刷屏，默认 3",
+    "default": 3
+  },
+  "owned_games_compact_cover_concurrency": {
+    "description": "简洁图片封面并发数",
+    "type": "int",
+    "hint": "compact 样式下同时下载封面缩略图的并发数（1-8），默认 4；网络较慢或频繁触发 Steam 限流时调低",
+    "default": 4
   }
 }

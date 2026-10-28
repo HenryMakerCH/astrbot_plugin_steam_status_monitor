@@ -4,6 +4,7 @@
 """
 import os
 import io
+import math
 import asyncio
 import httpx
 from datetime import datetime
@@ -42,6 +43,8 @@ SEGMENT_COLORS = [
     (136, 170, 255),   # 蓝紫
 ]
 SEGMENT_COLOR_OTHER = (100, 110, 120)  # 其他游戏灰色
+MAX_GAMES_PER_PLAYER = 15              # 每人最多展示的游戏明细（其余合并为「其他」）
+OTHER_GAME_NAME = "其他"
 
 # 排名字体色
 RANK_TEXT_COLOR = {
@@ -126,32 +129,147 @@ async def _fetch_avatar(avatar_url, data_dir, sid, proxy=None):
     return None
 
 
-def _draw_segment_bar(draw, x, y, w, h, games, colors, max_total=None):
-    """绘制分段彩色进度条
-    max_total: Top1玩家的总时长作为100%基准；None则用玩家自己的总时长
-    返回 (fill_w, player_total) 供调用方绘制百分比文字
+def _split_segment_widths(minutes, fill_w):
+    """按最大余数法把 fill_w 像素分配给各游戏。
+
+    保证：返回与 minutes 等长、每项 >= 0、总和恰好等于 fill_w。
     """
-    player_total = sum(g["minutes"] for g in games)
-    if player_total <= 0:
-        return 0, 0
-    if max_total is None or max_total <= 0:
-        max_total = player_total
-    fill_ratio = min(player_total / max_total, 1.0)
-    fill_w = int(w * fill_ratio)
-    if fill_w <= 0:
-        return 0, player_total
-    cur_x = x
-    for i, (game, color) in enumerate(zip(games, colors)):
-        seg_w = max(1, int(fill_w * game["minutes"] / player_total))
-        if i == len(games) - 1:
-            seg_w = x + fill_w - cur_x
-        draw.rounded_rectangle(
-            (cur_x, y, cur_x + seg_w, y + h),
-            radius=h // 2,
-            fill=color + (255,)
+    count = len(minutes)
+    if count == 0 or fill_w <= 0:
+        return [0] * count
+
+    values = []
+    for value in minutes:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = 0.0
+        if not math.isfinite(number) or number < 0:
+            number = 0.0
+        values.append(number)
+
+    total = sum(values)
+    if total <= 0:
+        return [0] * count
+
+    raw = [fill_w * value / total for value in values]
+    widths = [int(value) for value in raw]
+    remainder = fill_w - sum(widths)
+    if remainder > 0:
+        order = sorted(
+            range(count),
+            key=lambda index: (-(raw[index] - widths[index]), index),
         )
-        cur_x += seg_w
-    return fill_w, player_total
+        for index in order[:remainder]:
+            widths[index] += 1
+    return widths
+
+
+def _prepare_display_games(games, limit=MAX_GAMES_PER_PLAYER):
+    """过滤 0 分钟、按分钟降序、截断到 limit，其余合并为「其他（N 款）」。"""
+    normalized = []
+    for index, game in enumerate(games or []):
+        if not isinstance(game, dict):
+            continue
+        try:
+            minutes = float(game.get("minutes", 0) or 0)
+        except (TypeError, ValueError):
+            minutes = 0.0
+        if not math.isfinite(minutes) or minutes <= 0:
+            continue
+        normalized.append({
+            "name": game.get("name") or "未知游戏",
+            "minutes": minutes,
+            "gameid": game.get("gameid", ""),
+            "_order": index,
+        })
+
+    normalized.sort(key=lambda item: (-item["minutes"], item["_order"]))
+    items = normalized[:limit]
+    hidden = normalized[limit:]
+    if hidden:
+        items.append({
+            "name": f"{OTHER_GAME_NAME}（{len(hidden)} 款）",
+            "minutes": sum(item["minutes"] for item in hidden),
+            "gameid": "",
+            "is_other": True,
+            "_order": limit,
+        })
+
+    prepared = []
+    for position, item in enumerate(items):
+        color = (
+            SEGMENT_COLOR_OTHER
+            if item.get("is_other")
+            else SEGMENT_COLORS[position % len(SEGMENT_COLORS)]
+        )
+        prepared.append({
+            "name": item["name"],
+            "minutes": item["minutes"],
+            "gameid": item.get("gameid", ""),
+            "color": color,
+            "is_other": bool(item.get("is_other")),
+        })
+    return prepared
+
+
+def _draw_segment_bar(draw, x, y, w, h, games, colors, max_total=None):
+    """绘制分段彩色进度条。
+
+    返回 (fill_w, player_total, segments)；segments 记录每段
+    {name, minutes, x0, x1, width}，所有段宽度非负且总和恰为 fill_w。
+    """
+    if w <= 0 or h <= 0 or not games:
+        return 0, 0, []
+
+    minutes = []
+    for game in games:
+        try:
+            value = float((game or {}).get("minutes", 0) or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if not math.isfinite(value) or value < 0:
+            value = 0.0
+        minutes.append(value)
+
+    player_total = sum(minutes)
+    if player_total <= 0:
+        return 0, player_total, []
+
+    try:
+        max_total = float(max_total or 0)
+    except (TypeError, ValueError):
+        max_total = 0.0
+    if not math.isfinite(max_total) or max_total <= 0:
+        max_total = player_total
+
+    fill_ratio = min(player_total / max_total, 1.0)
+    fill_w = min(int(w), max(0, int(w * fill_ratio)))
+    if fill_w <= 0:
+        return 0, player_total, []
+
+    widths = _split_segment_widths(minutes, fill_w)
+    radius = max(0, h // 2)
+    cursor = x
+    segments = []
+    for index, width in enumerate(widths):
+        game = games[index] or {}
+        color = colors[index % len(colors)] if colors else SEGMENT_COLOR_OTHER
+        if width > 0:
+            draw.rounded_rectangle(
+                (cursor, y, cursor + width, y + h),
+                radius=min(radius, width // 2),
+                fill=tuple(color) + (255,),
+            )
+        segments.append({
+            "name": game.get("name", ""),
+            "minutes": minutes[index],
+            "x0": cursor,
+            "x1": cursor + width,
+            "width": width,
+        })
+        cursor += width
+    return fill_w, player_total, segments
 
 
 async def render_rank_image(data_dir, rank_data, period_label, font_path=None, proxy=None, cover_fetcher=None, avatar_frame_paths=None):
@@ -166,9 +284,6 @@ async def render_rank_image(data_dir, rank_data, period_label, font_path=None, p
     Returns:
         PNG 图片 bytes
     """
-    if font_path is None:
-        font_path = os.path.join(str(FONTS_DIR), 'NotoSansHans-Regular.otf')
-
     font_title = _get_bold_font(font_path, 28)       # 标题加粗放大
     font_subtitle = _get_font(font_path, 14)
     font_rank = _get_bold_font(font_path, 26)        # 排名序号加粗
@@ -179,6 +294,9 @@ async def render_rank_image(data_dir, rank_data, period_label, font_path=None, p
 
     rank_data = rank_data[:MAX_PLAYERS]
     n = len(rank_data)
+    prepared_games = [
+        _prepare_display_games(player.get("games", [])) for player in rank_data
+    ]
 
     if n == 0:
         height = 200
@@ -204,8 +322,8 @@ async def render_rank_image(data_dir, rank_data, period_label, font_path=None, p
     max_total_minutes = rank_data[0]["total_minutes"] if rank_data else 0  # Top1总时长作为进度条100%基准
     # 按完整游戏明细动态计算卡片高度，避免隐藏玩家的其他游戏。
     card_heights = []
-    for p in rank_data:
-        game_count = len(p.get("games", []))
+    for idx, _player in enumerate(rank_data):
+        game_count = len(prepared_games[idx])
         if game_count <= 1:
             card_heights.append(155)
         elif game_count == 2:
@@ -324,12 +442,12 @@ async def render_rank_image(data_dir, rank_data, period_label, font_path=None, p
             draw.rounded_rectangle((cover_x, cover_y, cover_x + COVER_W, cover_y + COVER_H), radius=6, fill=(40, 50, 65))
             draw.text((cover_x + 40, cover_y + 28), "No Cover", font=font_small, fill=(100, 110, 120))
 
-        # 游戏明细表格：完整显示该玩家在统计周期内的所有游戏。
-        games = player["games"]
-        display_items = []
-        for i, game in enumerate(games):
-            color = SEGMENT_COLORS[i % len(SEGMENT_COLORS)]
-            display_items.append((game["name"], _format_hours(game["minutes"]), color))
+        # 游戏明细表格：每人最多展示 Top15，其余合并为「其他」。
+        display_games = prepared_games[idx]
+        display_items = [
+            (game["name"], _format_hours(game["minutes"]), game["color"])
+            for game in display_games
+        ]
 
         # 表格区域：左边界 = 头像右侧，右边界 = 封面左侧
         tbl_left = cx + TABLE_LEFT
@@ -351,12 +469,15 @@ async def render_rank_image(data_dir, rank_data, period_label, font_path=None, p
         bar_x = tbl_left
         bar_w = tbl_right - tbl_left
         bar_h = 7
-        bar_games = games
-        bar_colors = [SEGMENT_COLORS[i % len(SEGMENT_COLORS)] for i in range(len(games))]
+        bar_games = display_games
+        bar_colors = [game["color"] for game in display_games]
         # 100%灰色背景条（作为满格基准）
         draw.rounded_rectangle((bar_x, bar_y, bar_x + bar_w, bar_y + bar_h), radius=bar_h//2, fill=(50, 55, 65, 255))
         # 实际填充进度条
-        fill_w, _ = _draw_segment_bar(draw, bar_x, bar_y, bar_w, bar_h, bar_games, bar_colors, max_total=max_total_minutes)
+        fill_w, _, _ = _draw_segment_bar(
+            draw, bar_x, bar_y, bar_w, bar_h, bar_games, bar_colors,
+            max_total=max_total_minutes,
+        )
         # 百分比（Top1=100%）
         if max_total_minutes > 0:
             pct = round(player["total_minutes"] / max_total_minutes * 100)

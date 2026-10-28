@@ -109,16 +109,59 @@ def apply_runtime_config(plugin, config=None):
     plugin.max_achievement_notifications = config.get("max_achievement_notifications", 5)
     plugin.rank_push_hour = config.get("rank_push_hour", 8)
     plugin.rank_push_minute = config.get("rank_push_minute", 30)
+    # 静默时段：旧配置缺键时补默认值，保证闸门与 WebUI 读到一致的字符串
+    config.setdefault("notify_quiet_hours", "0,0")
     ensure_socks_support(plugin.proxy)
     return config
 
 
+OWNED_GAMES_HOT_KEYS = {
+    "enable_owned_games_notify",
+    "owned_games_include_free",
+    "owned_games_poll_interval",
+    "owned_games_max_per_notify",
+    "owned_games_daily_budget",
+    "owned_games_ignore_appids",
+    "owned_games_grace_days",
+    # #66 简洁合并播报：新装用户配置里没有这些键，必须靠白名单放行热更新
+    "owned_games_notify_style",
+    "owned_games_auto_compact_threshold",
+    "owned_games_compact_page_size",
+    "owned_games_compact_max_pages",
+    "owned_games_compact_cover_concurrency",
+}
+_OWNED_BOOL_KEYS = {"enable_owned_games_notify", "owned_games_include_free"}
+_OWNED_INT_KEYS = {
+    "owned_games_poll_interval",
+    "owned_games_max_per_notify",
+    "owned_games_daily_budget",
+    "owned_games_grace_days",
+    "owned_games_auto_compact_threshold",
+    "owned_games_compact_page_size",
+    "owned_games_compact_max_pages",
+    "owned_games_compact_cover_concurrency",
+}
+_TRUE_WORDS = {"1", "true", "on", "yes", "开启", "启用"}
+
+
 def apply_hot_update(plugin, key, value):
     """/steam set 热更新：改 config 并同步已暴露的运行时属性。"""
-    if key not in plugin.config:
+    if key not in plugin.config and key not in OWNED_GAMES_HOT_KEYS:
         return False, f"无效参数: {key}"
-    old = plugin.config[key]
-    if key == "smart_poll_intervals":
+    old = plugin.config.get(key)
+    if key in OWNED_GAMES_HOT_KEYS:
+        # 游戏库新入库相关配置：老配置尚未合并新键时也允许热更新；
+        # 服务每轮直接读取 plugin.config，改后无需重启即可生效。
+        if key in _OWNED_BOOL_KEYS:
+            value = str(value).strip().lower() in _TRUE_WORDS
+        elif key in _OWNED_INT_KEYS:
+            try:
+                value = int(str(value).strip())
+            except Exception:
+                return False, "类型错误，应为整数"
+        else:
+            value = str(value).strip()
+    elif key == "smart_poll_intervals":
         value_list = parse_smart_poll_intervals(value)
         value = ",".join(str(x) for x in value_list)
         plugin.smart_poll_intervals = value_list

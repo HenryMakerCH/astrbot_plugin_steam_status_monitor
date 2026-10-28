@@ -245,9 +245,10 @@ class MonitorAdminService:
                 self._plugin._save_notify_session()
                 self._plugin._save_group_switches()
             
-            # 持久化
+            # 持久化（状态迁移与清理已发生，强制落盘避免异常退出前丢失）
             self._plugin._save_group_steam_ids()
             self._plugin._save_push_groups()
+            self._plugin._save_persistent_data(force=True)
             
             return GroupMutationResult(
                 True,
@@ -274,6 +275,7 @@ class MonitorAdminService:
         self._plugin.session_service.discard_player(steam_id)
         self._clear_runtime_state(steam_id)
         self._remove_bindings(steam_id)
+        self._forget_owned_games(steam_id)
         return GroupMutationResult(True, "removed primary monitor and all push routes")
     
     def _select_promotion_candidate(self, targets: list) -> str:
@@ -288,21 +290,27 @@ class MonitorAdminService:
         """迁移状态数据从原主群到新主群。"""
         state = self._state
         
-        # 迁移玩家状态
+        # 迁移玩家状态（迁移后删除原主群残留，避免幽灵状态被持续写盘）
         if old_group in state.group_last_states and steam_id in state.group_last_states[old_group]:
-            old_state = state.group_last_states[old_group][steam_id]
+            old_state = state.group_last_states[old_group].pop(steam_id)
+            if not state.group_last_states[old_group]:
+                state.group_last_states.pop(old_group, None)
             state.group_last_states.setdefault(new_group, {})[steam_id] = old_state
             logger.info(f"[状态晋升] 迁移 group_last_states: {old_group}[{steam_id}] -> {new_group}[{steam_id}]")
         
-        # 迁移退出时间
+        # 迁移退出时间（迁移后删除原主群残留）
         if old_group in state.group_last_quit_times and steam_id in state.group_last_quit_times[old_group]:
-            quit_times = state.group_last_quit_times[old_group][steam_id]
+            quit_times = state.group_last_quit_times[old_group].pop(steam_id)
+            if not state.group_last_quit_times[old_group]:
+                state.group_last_quit_times.pop(old_group, None)
             state.group_last_quit_times.setdefault(new_group, {})[steam_id] = quit_times
             logger.info(f"[状态晋升] 迁移 group_last_quit_times: {old_group}[{steam_id}] -> {new_group}[{steam_id}]")
         
-        # 迁移轮询时间
+        # 迁移轮询时间（迁移后删除原主群残留）
         if old_group in state.next_poll_time and steam_id in state.next_poll_time[old_group]:
-            poll_time = state.next_poll_time[old_group][steam_id]
+            poll_time = state.next_poll_time[old_group].pop(steam_id)
+            if not state.next_poll_time[old_group]:
+                state.next_poll_time.pop(old_group, None)
             state.next_poll_time.setdefault(new_group, {})[steam_id] = poll_time
             logger.info(f"[状态晋升] 迁移 next_poll_time: {old_group}[{steam_id}] -> {new_group}[{steam_id}]")
 
@@ -328,6 +336,10 @@ class MonitorAdminService:
             pending[group_id] = [item for item in pending[group_id] if str(item.get("sid", item.get("steamid", ""))) != steam_id]
             if not pending[group_id]:
                 pending.pop(group_id, None)
+        sid_key = str(steam_id)
+        getattr(self._plugin, "_presence_online_since", {}).pop(sid_key, None)
+        getattr(self._plugin, "_presence_pending_offline", {}).pop(sid_key, None)
+        getattr(self._plugin, "_presence_settled_offline_at", {}).pop(sid_key, None)
         for attr in ("achievement_poll_tasks", "achievement_snapshots", "achievement_fail_count"):
             cache = getattr(self._plugin, attr, {})
             for key in list(cache):
@@ -344,6 +356,23 @@ class MonitorAdminService:
             del bindings[qq]
         if removed:
             self._plugin._save_bind_data()
+
+    # ========== 游戏库快照联动清理（新入库播报） ==========
+
+    def _forget_owned_games(self, steam_id: str) -> None:
+        service = getattr(self._plugin, "owned_games", None)
+        if service is not None:
+            service.forget_and_flush(steam_id)
+
+    def _prune_owned_games(self) -> None:
+        service = getattr(self._plugin, "owned_games", None)
+        if service is not None:
+            service.prune_orphans()
+
+    def _clear_owned_games(self) -> None:
+        service = getattr(self._plugin, "owned_games", None)
+        if service is not None:
+            service.clear_and_flush()
 
     def add_group(self, group_id: str) -> GroupMutationResult:
         if not is_valid_group_id(group_id):
@@ -409,6 +438,9 @@ class MonitorAdminService:
             for sid, targets in (getattr(plugin, "push_groups", {}) or {}).items()
             if str(group_id) in {str(target) for target in targets}
         ]
+        removed_sids = {str(sid) for sid in (self.groups.get(group_id, []) or [])} | {
+            str(sid) for sid in routed_sids
+        }
         if not has_primary and not routed_sids:
             return GroupMutationResult(False, f"群聊 {group_id} 未绑定任何SteamID，无需清理。")
 
@@ -441,6 +473,13 @@ class MonitorAdminService:
         snapshots = getattr(plugin, "achievement_snapshots", {})
         for key in [item for item in list(snapshots.keys()) if item[0] == group_id]:
             snapshots.pop(key, None)
+        remaining_sids = {
+            str(sid) for ids in self.groups.values() for sid in ids
+        }
+        for sid in removed_sids - remaining_sids:
+            getattr(plugin, "_presence_online_since", {}).pop(sid, None)
+            getattr(plugin, "_presence_pending_offline", {}).pop(sid, None)
+            getattr(plugin, "_presence_settled_offline_at", {}).pop(sid, None)
         plugin._save_group_steam_ids()
         plugin._save_push_groups()
         plugin._save_notify_session()
@@ -448,6 +487,7 @@ class MonitorAdminService:
         plugin._save_persistent_data(force=True)
         if hasattr(getattr(plugin, "config", None), "save_config"):
             plugin.config.save_config()
+        self._prune_owned_games()
         return GroupMutationResult(True, f"已删除群聊 {group_id} 的所有SteamID和分发路由，相关状态数据已清空。")
 
     def clear_all_ids(self) -> GroupMutationResult:
@@ -472,6 +512,9 @@ class MonitorAdminService:
         getattr(plugin, "_session_meta", {}).clear()
         plugin.group_recent_games.clear()
         plugin._pending_end_notifications.clear()
+        getattr(plugin, "_presence_online_since", {}).clear()
+        getattr(plugin, "_presence_pending_offline", {}).clear()
+        getattr(plugin, "_presence_settled_offline_at", {}).clear()
         getattr(plugin, "notify_sessions", {}).clear()
         plugin._save_group_steam_ids()
         plugin._save_push_groups()
@@ -482,6 +525,7 @@ class MonitorAdminService:
             config["group_steam_ids"] = plugin.group_steam_ids
         if hasattr(config, "save_config"):
             config.save_config()
+        self._clear_owned_games()
         return GroupMutationResult(True, "已删除所有群聊的所有SteamID，相关状态数据已清空。")
 
     def list_group_players(self, group_id: str) -> List[Dict[str, Any]]:

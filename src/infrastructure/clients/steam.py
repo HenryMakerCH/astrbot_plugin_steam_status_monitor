@@ -10,7 +10,7 @@ from ...shared.logging import format_exception, logger
 from ...shared.network import httpx_client_kwargs
 from ...shared.utils.price import store_region_candidates
 
-# 成人内容/年龄墙：无 Cookie 时 appdetails 与 appreviews 常返回 success=false。
+# 成人内容/年龄墙：无 Cookie 时 appdetails 常返回 success=false。
 STEAM_STORE_COOKIES = {
     "birthtime": "0",
     "lastagecheckage": "1-0-1970",
@@ -25,6 +25,46 @@ STEAM_STORE_HEADERS = {
     ),
     "Accept": "application/json, text/plain, */*",
 }
+
+# Steam EUserReviewScore（GetAppReviews 的 review_score 字段）
+REVIEW_SCORE_LABELS = {
+    1: "差评如潮",
+    2: "特别差评",
+    3: "差评",
+    4: "多半差评",
+    5: "褒贬不一",
+    6: "多半好评",
+    7: "好评",
+    8: "特别好评",
+    9: "好评如潮",
+}
+# review_score 缺失时的英文档位兜底
+REVIEW_SCORE_DESC_LABELS = {
+    "overwhelmingly negative": "差评如潮",
+    "very negative": "特别差评",
+    "negative": "差评",
+    "mostly negative": "多半差评",
+    "mixed": "褒贬不一",
+    "mostly positive": "多半好评",
+    "positive": "好评",
+    "very positive": "特别好评",
+    "overwhelmingly positive": "好评如潮",
+}
+
+
+def _review_label_from_percent(percent):
+    """好评率兜底分档：仅在 review_score 与 review_score_desc 都缺失时使用。"""
+    if percent >= 95:
+        return "好评如潮"
+    if percent >= 80:
+        return "特别好评"
+    if percent >= 70:
+        return "多半好评"
+    if percent >= 40:
+        return "褒贬不一"
+    if percent >= 20:
+        return "多半差评"
+    return "差评"
 
 
 def steam_store_client_kwargs(proxy=None):
@@ -78,6 +118,14 @@ async def close_steam_store_client(owner):
 
 class SteamClientError(RuntimeError):
     """Steam 客户端调用失败。"""
+
+
+class OwnedGamesRateLimited(SteamClientError):
+    """游戏库接口被 Steam 限流（HTTP 429），调用方应统一退避后重试。"""
+
+
+class OwnedGamesInvisible(SteamClientError):
+    """玩家「游戏详情」隐私不可见，本轮不更新基线、不播报。"""
 
 
 def continue_store_region_fallback(error: ProviderError) -> bool:
@@ -254,6 +302,76 @@ class SteamClientMixin:
                         )
         return result
 
+    async def fetch_owned_games(self, steam_id, include_appinfo=False, include_played_free_games=True, retry=None):
+        '''读取玩家可见的完整游戏库（IPlayerService/GetOwnedGames/v1，无分页）。
+
+        - 返回 list[dict]：每项至少含 appid；include_appinfo=True 时附带 name 等字段；
+        - 空库返回 []；「游戏详情」私密时抛 OwnedGamesInvisible（不得当作空库处理）；
+        - HTTP 429 抛 OwnedGamesRateLimited，由调用方统一退避；
+        - 其余网络/协议失败按 RETRY_TIMES 指数退避重试，最终抛 SteamClientError。
+        安全：API Key 经 params 传递，异常文案与日志均不包含完整 URL 或请求参数，
+        避免 Key 进入日志（与 fork 的安全注释思路一致，不沿用拼 URL 的旧写法）。
+        '''
+        if not self.API_KEY:
+            raise SteamClientError("未配置 Steam API Key")
+        sid = str(steam_id or "").strip()
+        if not sid.isdigit():
+            raise SteamClientError("SteamID 格式无效")
+        url = f"{self.STEAM_API_BASE}/IPlayerService/GetOwnedGames/v1/"
+        params = {
+            "key": self.API_KEY,
+            "steamid": sid,
+            "include_appinfo": 1 if include_appinfo else 0,
+            "include_played_free_games": 1 if include_played_free_games else 0,
+        }
+        attempts = retry if retry is not None else self.RETRY_TIMES
+        delay = 1
+        last_error = None
+        for attempt in range(attempts):
+            try:
+                async with httpx.AsyncClient(timeout=20, **httpx_client_kwargs(self.proxy)) as client:
+                    resp = await client.get(url, params=params)
+                if resp.status_code == 429:
+                    raise OwnedGamesRateLimited("Steam 游戏库接口请求受限（HTTP 429）")
+                if resp.status_code >= 500:
+                    raise RuntimeError(f"HTTP {resp.status_code}")
+                if resp.status_code != 200:
+                    raise SteamClientError(f"Steam 游戏库请求失败（HTTP {resp.status_code}）")
+                try:
+                    payload = resp.json().get("response")
+                except (ValueError, AttributeError) as exc:
+                    raise RuntimeError(f"响应 JSON 解析失败: {type(exc).__name__}") from exc
+                if not isinstance(payload, dict):
+                    raise RuntimeError(f"响应结构异常（类型={type(payload).__name__}）")
+                games = payload.get("games")
+                count = payload.get("game_count")
+                if isinstance(games, list):
+                    if isinstance(count, int) and count != len(games):
+                        # 个别账号存在下架/未审核条目导致计数不一致：仅告警，按实际列表处理
+                        logger.warning(
+                            f"[游戏库] game_count 与列表长度不一致: {count} != {len(games)} (SteamID: {sid})"
+                        )
+                    return [
+                        game for game in games
+                        if isinstance(game, dict) and isinstance(game.get("appid"), int)
+                    ]
+                if count == 0:
+                    return []
+                if "game_count" not in payload:
+                    raise OwnedGamesInvisible("Steam 游戏库不可见（请检查该账号「游戏详情」隐私设置）")
+                raise RuntimeError(f"响应缺少游戏列表（game_count={count!r}）")
+            except (OwnedGamesRateLimited, OwnedGamesInvisible, SteamClientError):
+                raise
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    f"读取 Steam 游戏库失败: {format_exception(exc)} (SteamID: {sid}, 第{attempt+1}次尝试)"
+                )
+                if attempt < attempts - 1:
+                    await asyncio.sleep(delay)
+                    delay *= 2
+        raise SteamClientError("Steam 游戏库请求失败") from last_error
+
     async def resolve_steam_input(self, raw):
         '''将多种格式的 Steam 输入统一解析为 17 位 SteamID64。
         支持：
@@ -329,39 +447,59 @@ class SteamClientMixin:
             return None
 
     async def _review_summary(self, appid, language="all"):
-        """获取 Steam 商店评价摘要。language 传 'all' 表示所有语言（缺省），否则为指定语言。
-        返回 {"text","percent","total"} 或 None。"""
+        """获取 Steam 评价摘要（IUserReviewsService/GetAppReviews v1）。
+
+        language 传 'all' 表示所有语言（缺省），否则为指定语言。
+        返回 {"text","percent","total"} 或 None。
+
+        旧接口 store.steampowered.com/appreviews/<appid>?json=1 已被 Steam 标记废弃，
+        现在一律 302 跳转到商店首页（跟随重定向只会拿到 HTML），故改用 Web API。
+        """
         gid = str(appid).strip()
-        if not gid.isdigit():
+        # str.isdigit() 的接受域比 int() 宽（如 "²" 通过 isdigit 但 int() 抛错），
+        # 这里统一按 ASCII 数字收口，避免非法 appid 把异常漏到 gather 之外。
+        if not (gid.isascii() and gid.isdigit()):
             return None
-        url = f"{self.STEAM_STORE_BASE}/appreviews/{gid}"
-        params = {"json": 1, "filter": "summary"}
-        language = language or "all"
-        params["language"] = language
+        url = f"{self.STEAM_API_BASE}/IUserReviewsService/GetAppReviews/v1/"
+        # 该接口只接受 GET（POST 返回 405）；num_per_page 必须为 1，
+        # 传 0 会把整页评价正文一并带回来。
+        params = {
+            "input_json": json.dumps(
+                {
+                    "appid": int(gid),
+                    "languages": self._review_languages(language),
+                    "review_type": 0,
+                    "num_per_page": 1,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        }
         client, owned = await _get_steam_store_client(self)
         try:
             response = await client.get(url, params=params)
             response.raise_for_status()
-            payload = response.json()
-            summary = payload.get("query_summary") or payload.get("querySummary") or {}
-            total = int(summary.get("total_reviews") or summary.get("totalReviews") or 0)
-            positive = int(summary.get("total_positive") or summary.get("totalPositive") or 0)
+            body = response.json()
+            root = body.get("response") if isinstance(body, dict) else None
+            summary = root.get("query_summary") if isinstance(root, dict) else None
+            if not isinstance(summary, dict):
+                # 下架/非法 appid 返回 HTTP 200 + {"response":{}}：确实取不到评价数据，
+                # 返回 None 让卡片整体降级，而不是画两行「暂无评价」占位。
+                self._clear_store_error()
+                return None
+            total = self._as_int(summary.get("total_reviews"))
+            positive = self._as_int(summary.get("total_positive"))
             if total <= 0:
+                # 正常返回但总数为 0：这是「确实没有评价」，与取不到数据区分开
+                self._clear_store_error()
                 return {"text": "暂无评价", "percent": None, "total": 0}
             percent = round(positive * 100 / total)
-            if percent >= 95:
-                label = "好评如潮"
-            elif percent >= 80:
-                label = "特别好评"
-            elif percent >= 70:
-                label = "多半好评"
-            elif percent >= 40:
-                label = "褒贬不一"
-            elif percent >= 20:
-                label = "多半差评"
-            else:
-                label = "差评"
-            return {"text": label, "percent": percent, "total": total}
+            self._clear_store_error()
+            return {
+                "text": self._review_label(summary, percent),
+                "percent": percent,
+                "total": total,
+            }
         except Exception as exc:
             error = self._remember_store_error(classify_steam_store_error(exc))
             logger.warning(
@@ -376,12 +514,48 @@ class SteamClientMixin:
             if owned:
                 await client.aclose()
 
+    @staticmethod
+    def _review_languages(language):
+        """旧 language 参数 → GetAppReviews 的 languages 数组。"""
+        value = str(language or "all").strip()
+        return [value or "all"]
+
+    @staticmethod
+    def _as_int(value):
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _review_label(cls, summary, percent):
+        """优先取 Steam 官方评分档位（加权口径，与商店页文案一致），缺失时回落好评率阈值。"""
+        score = cls._as_int(summary.get("review_score"))
+        label = REVIEW_SCORE_LABELS.get(score)
+        if label:
+            return label
+        desc = str(summary.get("review_score_desc") or "").strip().lower()
+        label = REVIEW_SCORE_DESC_LABELS.get(desc)
+        if label:
+            return label
+        return _review_label_from_percent(percent)
+
     async def fetch_game_reviews_both(self, appid):
-        """同时获取「全部语言」与「简体中文」两份评价摘要，供卡片并列显示。"""
+        """同时获取「全部语言」与「简体中文」两份评价摘要，供卡片并列显示。
+
+        单侧异常只丢该侧结果，不影响另一侧已取到的摘要。
+        """
         all_review, zh_review = await asyncio.gather(
             self._review_summary(appid, None),
             self._review_summary(appid, "schinese"),
+            return_exceptions=True,
         )
+        if isinstance(all_review, BaseException):
+            logger.warning("获取 Steam 全语言评价失败 (appid=%s): %s", appid, all_review)
+            all_review = None
+        if isinstance(zh_review, BaseException):
+            logger.warning("获取 Steam 中文评价失败 (appid=%s): %s", appid, zh_review)
+            zh_review = None
         return {"all": all_review, "schinese": zh_review}
 
     async def _request_appdetails(self, client, gid, language=None, country=None, timeout=None):
@@ -667,6 +841,56 @@ class SteamClientMixin:
             logger.warning(f"获取游戏名失败: {e} (gameid={gid})")
         self._game_name_cache[gid] = (name_zh, name_en)
         return (name_zh, name_en)
+
+    async def get_game_names_batch(self, appids, lang="schinese", concurrency=6):
+        """批量获取游戏名，返回 {appid: name}。
+
+        Steam 的 appdetails 一次只接受一个 appid（传逗号列表会返回 400/null），
+        因此这里用限流并发逐条查询；查不到的条目不会出现在结果里。
+        """
+        wanted = []
+        for raw in appids or []:
+            gid = str(raw or "").strip()
+            if gid and gid.isdigit() and gid not in wanted:
+                wanted.append(gid)
+        if not wanted:
+            return {}
+
+        url = f"{self.STEAM_STORE_BASE}/api/appdetails"
+        names = {}
+        semaphore = asyncio.Semaphore(max(1, int(concurrency)))
+
+        async with httpx.AsyncClient(
+            timeout=12, **httpx_client_kwargs(self.proxy)
+        ) as client:
+
+            async def fetch_one(gid) -> None:
+                async with semaphore:
+                    for query_lang in (lang, "en"):
+                        try:
+                            resp = await client.get(
+                                url,
+                                params={"appids": gid, "l": query_lang},
+                                cookies=STEAM_STORE_COOKIES,
+                                headers=STEAM_STORE_HEADERS,
+                            )
+                            if resp.status_code != 200:
+                                continue
+                            data = resp.json()
+                        except Exception as exc:
+                            logger.warning(f"获取游戏名失败: {exc} (gameid={gid})")
+                            continue
+                        info = data.get(gid) if isinstance(data, dict) else None
+                        if not isinstance(info, dict) or not info.get("success"):
+                            continue
+                        name = str((info.get("data") or {}).get("name") or "").strip()
+                        if name:
+                            names[gid] = name
+                            self._game_name_cache[gid] = name
+                            return
+
+            await asyncio.gather(*(fetch_one(gid) for gid in wanted))
+        return names
 
     async def get_game_cover_url(self, gameid, force_update=False):
         '''

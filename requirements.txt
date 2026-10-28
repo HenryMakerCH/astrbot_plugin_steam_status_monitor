@@ -5,7 +5,7 @@ httpx[socks]>=0.26,<1
 aiohttp>=3.9,<4
 
 # 图片生成、裁剪与渲染
-Pillow>=9.5,<13
+Pillow>=9.5,<14
 
 # 图片自动边界检测（crop_image_auto）
 numpy>=1.21,<3

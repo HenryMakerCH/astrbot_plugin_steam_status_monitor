@@ -4,4 +4,4 @@ def group_id_of(event, default: str = "default") -> str:
     return default
 
 
-from . import monitor, ops, rank, store
+from . import achievement_admin, monitor, ops, rank, store
