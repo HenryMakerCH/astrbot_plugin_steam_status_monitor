@@ -29,6 +29,34 @@ DEFAULT_GRACE_DAYS = 7
 RECENT_HISTORY_LIMIT = 20
 DAY_ROLLOVER_HOUR = 4
 
+NOTIFY_STYLES = ("detailed", "compact")
+DEFAULT_NOTIFY_STYLE = "detailed"
+DEFAULT_COMPACT_PAGE_SIZE = 8
+DEFAULT_COMPACT_MAX_PAGES = 3
+DEFAULT_COMPACT_COVER_CONCURRENCY = 4
+BATCH_KIND = "owned_batch"
+
+
+def paginate_compact_entries(entries, page_size, max_pages=None):
+    """把本轮新增条目切成页；返回 [[entry, ...], ...]，至少一页。
+
+    page_size 夹在 1..20；max_pages 为 None 表示不截断。超出 max_pages 的条目
+    本轮不播报（但调用方已先把它们记入 state["recent"]，历史列表保持完整）。
+    """
+    items = list(entries or [])
+    try:
+        size = max(1, min(20, int(page_size)))
+    except (TypeError, ValueError):
+        size = DEFAULT_COMPACT_PAGE_SIZE
+    chunks = [items[index:index + size] for index in range(0, len(items), size)] or [[]]
+    if max_pages is not None:
+        try:
+            limit = max(1, min(10, int(max_pages)))
+        except (TypeError, ValueError):
+            limit = DEFAULT_COMPACT_MAX_PAGES
+        chunks = chunks[:limit]
+    return chunks
+
 
 class OwnedGamesService:
     """游戏库新入库检测服务：独立循环、差分、补发与查询支撑。"""
@@ -112,6 +140,41 @@ class OwnedGamesService:
 
     def _include_free(self) -> bool:
         return bool(self.plugin.config.get("owned_games_include_free", True))
+
+    def _style(self) -> str:
+        """播报样式：detailed（逐款富卡，默认）或 compact（本轮合并清单图）。"""
+        raw = (self.plugin.config or {}).get("owned_games_notify_style")
+        value = str(raw or DEFAULT_NOTIFY_STYLE).strip().lower()
+        return value if value in NOTIFY_STYLES else DEFAULT_NOTIFY_STYLE
+
+    def _compact_page_size(self) -> int:
+        try:
+            value = int(
+                self.plugin.config.get("owned_games_compact_page_size", DEFAULT_COMPACT_PAGE_SIZE)
+            )
+        except (TypeError, ValueError):
+            value = DEFAULT_COMPACT_PAGE_SIZE
+        return min(20, max(1, value or DEFAULT_COMPACT_PAGE_SIZE))
+
+    def _compact_max_pages(self) -> int:
+        try:
+            value = int(
+                self.plugin.config.get("owned_games_compact_max_pages", DEFAULT_COMPACT_MAX_PAGES)
+            )
+        except (TypeError, ValueError):
+            value = DEFAULT_COMPACT_MAX_PAGES
+        return min(10, max(1, value or DEFAULT_COMPACT_MAX_PAGES))
+
+    def _compact_cover_concurrency(self) -> int:
+        try:
+            value = int(
+                self.plugin.config.get(
+                    "owned_games_compact_cover_concurrency", DEFAULT_COMPACT_COVER_CONCURRENCY
+                )
+            )
+        except (TypeError, ValueError):
+            value = DEFAULT_COMPACT_COVER_CONCURRENCY
+        return min(8, max(1, value or DEFAULT_COMPACT_COVER_CONCURRENCY))
 
     def _grace_seconds(self) -> int:
         try:
@@ -332,6 +395,8 @@ class OwnedGamesService:
         if not self._enabled():
             logger.info(f"[游戏库] {sid} 检出 {len(appids)} 款新增，但播报开关已关闭，仅更新本地快照")
             return 0
+        if self._style() == "compact":
+            return await self._announce_compact(sid, groups, appids, state)
         max_cards = self._max_per_notify()
         now = int(time.time())
         items = []
@@ -375,6 +440,67 @@ class OwnedGamesService:
         ]
         return len(items)
 
+    async def _announce_compact(self, sid, groups, appids, state):
+        """简洁模式：本轮新增按页合并成清单图，逐页投递。
+
+        与详细模式的关键差异：**不调用 _enrich_card**，因此不会为每款游戏
+        请求商店详情与双语言评价；只取游戏名（走既有名称缓存），封面在渲染
+        阶段按需从 covers_h / covers_v 缓存取，未命中才下载。
+        """
+        now = int(time.time())
+        entries = []
+        for appid in appids:
+            name = None
+            try:
+                name, _english = await self.plugin.get_game_names(appid)
+            except Exception as exc:
+                logger.warning(f"[游戏库] 获取游戏名失败（appid={appid}）: {exc}")
+            name = str(name or f"AppID {appid}")
+            entries.append({"appid": str(appid), "name": name})
+            logger.info(f"[游戏库] {sid} 检出新增：{name}（appid={appid}）")
+            for entry in state.get("recent") or []:
+                if entry.get("appid") == str(appid):
+                    entry["name"] = name
+
+        chunks = paginate_compact_entries(
+            entries, self._compact_page_size(), self._compact_max_pages()
+        )
+        pages = len(chunks)
+        group_ids = [str(group_id) for group_id in groups]
+        items = []
+        for page, chunk in enumerate(chunks, start=1):
+            items.append({
+                "kind": BATCH_KIND,
+                "added_at": now,
+                "tries": 0,
+                "render": True,
+                "page": page,
+                "pages": pages,
+                "added_count": len(entries),
+                "groups": list(group_ids),
+                "deliveries": [],
+                "items": chunk,
+            })
+        state.setdefault("pending", []).extend(items)
+        self._dirty = True
+        for item in items:
+            try:
+                await self._flush_item_once(sid, state, item)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    f"[游戏库] 合并播报异常（sid={sid}, page={item.get('page')}/{pages}）"
+                )
+        state["pending"] = [
+            item for item in state["pending"]
+            if item.get("groups") or item.get("deliveries")
+        ]
+        logger.info(
+            f"[游戏库] {sid} 简洁模式播报：新增 {len(entries)} 款，共 {pages} 页"
+        )
+        return len(entries)
+
     async def _enrich_card(self, appid):
         """懒加载商店详情 + 双语言评价（复用价格查询管线与缓存）；失败降级返回 None。"""
         service = getattr(self.plugin, "price_query", None)
@@ -391,6 +517,39 @@ class OwnedGamesService:
                 logger.warning(f"[游戏库] 商店详情/评价获取失败（appid={appid}），卡片将降级: {exc}")
                 return None
 
+    def _build_item_noti(self, sid, item, status, owned_count):
+        """把 pending item 转成通知字典：按 kind 分派详细卡片 / 合并清单页。"""
+        plugin = self.plugin
+        noti = {
+            "sid": str(sid),
+            "name": plugin._resolve_bind_name(sid, status.get("name") or str(sid)),
+            "avatar_url": status.get("avatarfull") or status.get("avatar"),
+            "added_at": int(item.get("added_at") or 0),
+            "owned_count": owned_count,
+            "render": bool(item.get("render", True)),
+        }
+        if item.get("kind") == BATCH_KIND:
+            noti.update({
+                "type": BATCH_KIND,
+                "page": max(1, int(item.get("page") or 1)),
+                "pages": max(1, int(item.get("pages") or 1)),
+                "added_count": max(0, int(item.get("added_count") or 0)),
+                "items": [
+                    {"appid": str(entry.get("appid")), "name": str(entry.get("name") or "")}
+                    for entry in (item.get("items") or [])
+                    if isinstance(entry, dict) and entry.get("appid") is not None
+                ],
+            })
+            return noti
+        noti.update({
+            "type": "owned",
+            "gameid": str(item.get("appid")),
+            "game": item.get("name") or f"AppID {item.get('appid')}",
+            "status": status,
+            "card_data": item.get("card_data"),
+        })
+        return noti
+
     async def _flush_item_once(self, sid, state, item):
         """按 item['groups'] 执行首次投递；失败按会话粒度记入 item['deliveries']。"""
         groups = [str(group_id) for group_id in item.get("groups") or []]
@@ -398,28 +557,19 @@ class OwnedGamesService:
             return
         plugin = self.plugin
         owned_count = len(state.get("ids") or [])
+        is_batch = item.get("kind") == BATCH_KIND
+        label = (
+            f"第 {item.get('page')}/{item.get('pages')} 页"
+            if is_batch else (item.get("name") or f"AppID {item.get('appid')}")
+        )
         for group_id in groups:
             status = ((getattr(plugin, "group_last_states", {}) or {}).get(group_id) or {}).get(str(sid)) or {}
-            noti = {
-                "type": "owned",
-                "sid": str(sid),
-                "name": plugin._resolve_bind_name(sid, status.get("name") or str(sid)),
-                "gameid": str(item.get("appid")),
-                "game": item.get("name") or f"AppID {item.get('appid')}",
-                "status": status,
-                "avatar_url": status.get("avatarfull") or status.get("avatar"),
-                "added_at": int(item.get("added_at") or 0),
-                "owned_count": owned_count,
-                "render": bool(item.get("render", True)),
-                "card_data": item.get("card_data"),
-            }
+            noti = self._build_item_noti(sid, item, status, owned_count)
             failed = await self._send_to_group(group_id, noti)
             if failed:
-                logger.warning(
-                    f"[游戏库] 播报发送失败：{item.get('name')} → 群 {group_id}，已进入补发队列"
-                )
+                logger.warning(f"[游戏库] 播报发送失败：{label} → 群 {group_id}，已进入补发队列")
             else:
-                logger.info(f"[游戏库] 播报已送达：{item.get('name')} → 群 {group_id}")
+                logger.info(f"[游戏库] 播报已送达：{label} → 群 {group_id}")
             for failed_noti in failed:
                 item.setdefault("deliveries", []).append({
                     "group_id": str(group_id),

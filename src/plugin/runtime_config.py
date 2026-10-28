@@ -123,6 +123,11 @@ OWNED_GAMES_HOT_KEYS = {
     "owned_games_daily_budget",
     "owned_games_ignore_appids",
     "owned_games_grace_days",
+    # #66 简洁合并播报：新装用户配置里没有这些键，必须靠白名单放行热更新
+    "owned_games_notify_style",
+    "owned_games_compact_page_size",
+    "owned_games_compact_max_pages",
+    "owned_games_compact_cover_concurrency",
 }
 _OWNED_BOOL_KEYS = {"enable_owned_games_notify", "owned_games_include_free"}
 _OWNED_INT_KEYS = {
@@ -130,6 +135,9 @@ _OWNED_INT_KEYS = {
     "owned_games_max_per_notify",
     "owned_games_daily_budget",
     "owned_games_grace_days",
+    "owned_games_compact_page_size",
+    "owned_games_compact_max_pages",
+    "owned_games_compact_cover_concurrency",
 }
 _TRUE_WORDS = {"1", "true", "on", "yes", "开启", "启用"}
 

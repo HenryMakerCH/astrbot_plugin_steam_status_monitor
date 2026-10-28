@@ -346,5 +346,30 @@
     "type": "int",
     "hint": "免费周末等临时入库又移除的游戏，在此窗口内重现不重复播报；默认 7 天",
     "default": 7
+  },
+  "owned_games_notify_style": {
+    "description": "游戏库新入库播报样式",
+    "type": "string",
+    "hint": "detailed=每款新增一张商店详情富卡（含简介与双语言评价，每款需请求商店详情与评价，API 消耗较高）；compact=本轮新增合并为清单图（仅游戏名+封面缩略图，按每页条数自动分页），适合一次入库很多款。默认 detailed；也可用 /steam set owned_games_notify_style compact 即时切换",
+    "default": "detailed",
+    "enum": ["detailed", "compact"]
+  },
+  "owned_games_compact_page_size": {
+    "description": "简洁图片每页游戏数",
+    "type": "int",
+    "hint": "compact 样式下单张图片最多列出几款游戏（1-20），超出一页自动分页；默认 8。注意与「单轮最多渲染卡片数」是两个独立配置：前者只影响简洁模式的每页行数，后者只影响详细模式的富卡数量",
+    "default": 8
+  },
+  "owned_games_compact_max_pages": {
+    "description": "简洁模式单轮最多页数",
+    "type": "int",
+    "hint": "compact 样式下单轮最多推送几张分页图（1-10），超出部分本轮不播报但仍记入最近入库；用于防止一次入库上百款时刷屏，默认 3",
+    "default": 3
+  },
+  "owned_games_compact_cover_concurrency": {
+    "description": "简洁图片封面并发数",
+    "type": "int",
+    "hint": "compact 样式下同时下载封面缩略图的并发数（1-8），默认 4；网络较慢或频繁触发 Steam 限流时调低",
+    "default": 4
   }
 }

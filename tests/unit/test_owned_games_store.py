@@ -117,6 +117,128 @@ class OwnedGamesStoreTests(unittest.TestCase):
         store.flush()
         self.assertTrue(os.path.exists(os.path.join(target, "owned_games.json")))
 
+    # ---------- #66 简洁合并播报：owned_batch pending ----------
+
+    def test_owned_batch_pending_roundtrip(self):
+        batch = {
+            "kind": "owned_batch",
+            "added_at": 1700000000,
+            "tries": 1,
+            "render": True,
+            "page": 2,
+            "pages": 3,
+            "added_count": 17,
+            "groups": [111, "222"],
+            "deliveries": [],
+            "items": [{"appid": 570, "name": "Dota 2"}, {"appid": "730"}],
+        }
+        store = OwnedGamesStore(self.data_dir)
+        store.players["s1"] = _state([10], pending=[batch])
+        store.flush()
+
+        again = OwnedGamesStore(self.data_dir)
+        entry = again.players["s1"]["pending"][0]
+        self.assertEqual(entry["kind"], "owned_batch")
+        self.assertNotIn("appid", entry)
+        self.assertEqual(entry["page"], 2)
+        self.assertEqual(entry["pages"], 3)
+        self.assertEqual(entry["added_count"], 17)
+        self.assertEqual(entry["tries"], 1)
+        self.assertEqual(entry["added_at"], 1700000000)
+        self.assertTrue(entry["render"])
+        self.assertEqual(entry["groups"], ["111", "222"])
+        self.assertEqual(entry["items"], [
+            {"appid": "570", "name": "Dota 2"},
+            {"appid": "730", "name": "AppID 730"},
+        ])
+
+    def test_legacy_pending_without_kind_still_normalized(self):
+        legacy = {
+            "appid": 570,
+            "name": "Dota 2",
+            "added_at": "1700000000",
+            "tries": 2,
+            "render": False,
+            "groups": ["333"],
+            "card_data": {"title": "Dota 2", "reviews": {"zh": "好评"}},
+            "deliveries": [{"group_id": "333", "noti": {"type": "card", "page": 1}}],
+        }
+        payload = {"version": 1, "players": {"s1": _state([10], pending=[legacy])}}
+        with open(os.path.join(self.data_dir, "owned_games.json"), "w", encoding="utf-8") as stream:
+            json.dump(payload, stream)
+
+        entry = OwnedGamesStore(self.data_dir).players["s1"]["pending"][0]
+        # 老字段一个都不能丢
+        self.assertEqual(entry["card_data"], {"title": "Dota 2", "reviews": {"zh": "好评"}})
+        self.assertIs(entry["render"], False)
+        self.assertEqual(entry["deliveries"], [{"group_id": "333", "noti": {"type": "card", "page": 1}}])
+        # 老数据不补写 kind，保证落盘字节与升级前一致
+        self.assertNotIn("kind", entry)
+        self.assertEqual(entry["appid"], "570")
+        self.assertEqual(entry["tries"], 2)
+
+    def test_legacy_pending_without_appid_dropped(self):
+        payload = {"version": 1, "players": {"s1": _state([10], pending=[{"name": "no appid"}])}}
+        with open(os.path.join(self.data_dir, "owned_games.json"), "w", encoding="utf-8") as stream:
+            json.dump(payload, stream)
+        self.assertEqual(OwnedGamesStore(self.data_dir).players["s1"]["pending"], [])
+
+    def test_owned_batch_invalid_items_dropped(self):
+        bad_batches = [
+            {"kind": "owned_batch", "items": []},
+            {"kind": "owned_batch", "items": "oops"},
+            {"kind": "owned_batch", "items": [{"name": "x"}]},
+        ]
+        payload = {"version": 1, "players": {
+            "s1": _state(
+                [10],
+                pending=bad_batches + [{"appid": 440, "name": "TF2"}],
+            ),
+        }}
+        with open(os.path.join(self.data_dir, "owned_games.json"), "w", encoding="utf-8") as stream:
+            json.dump(payload, stream)
+
+        pending = OwnedGamesStore(self.data_dir).players["s1"]["pending"]
+        self.assertEqual(len(pending), 1)  # 三条脏 batch 全丢，其它 pending 不受影响
+        self.assertEqual(pending[0]["appid"], "440")
+
+    def test_mixed_pending_kinds_coexist(self):
+        payload = {"version": 1, "players": {
+            "s1": _state([10], pending=[
+                {"appid": 440, "name": "TF2"},
+                {"kind": "owned_batch", "page": 1, "pages": 2,
+                 "items": [{"appid": 570, "name": "Dota 2"}]},
+                {"appid": 730, "name": "CS2"},
+            ]),
+        }}
+        with open(os.path.join(self.data_dir, "owned_games.json"), "w", encoding="utf-8") as stream:
+            json.dump(payload, stream)
+
+        pending = OwnedGamesStore(self.data_dir).players["s1"]["pending"]
+        self.assertEqual([entry.get("kind", "owned") for entry in pending],
+                         ["owned", "owned_batch", "owned"])
+        self.assertEqual(pending[0]["appid"], "440")
+        self.assertEqual(pending[1]["items"], [{"appid": "570", "name": "Dota 2"}])
+        self.assertEqual(pending[2]["appid"], "730")
+
+    def test_owned_batch_deliveries_preserved(self):
+        batch = {
+            "kind": "owned_batch",
+            "items": [{"appid": 570, "name": "Dota 2"}],
+            "deliveries": [
+                {"group_id": 555, "noti": {"type": "compact_page", "page": 2}},
+                {"group_id": "666", "noti": "not-a-dict"},  # 非法 noti 丢弃
+            ],
+        }
+        store = OwnedGamesStore(self.data_dir)
+        store.players["s1"] = _state([10], pending=[batch])
+        store.flush()
+
+        entry = OwnedGamesStore(self.data_dir).players["s1"]["pending"][0]
+        self.assertEqual(entry["deliveries"], [
+            {"group_id": "555", "noti": {"type": "compact_page", "page": 2}},
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

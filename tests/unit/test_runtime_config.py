@@ -66,3 +66,35 @@ def test_apply_hot_update_parses_intervals_and_ints():
     ok, msg = apply_hot_update(plugin, "missing", "1")
     assert ok is False
     assert "无效参数" in msg
+
+
+def test_apply_hot_update_owned_style_string():
+    # 新装用户配置文件里没有该键 → 靠 OWNED_GAMES_HOT_KEYS 白名单放行
+    plugin = SimpleNamespace(config={"steam_api_key": "K"})
+
+    ok, msg = apply_hot_update(plugin, "owned_games_notify_style", "compact")
+
+    assert ok is True
+    assert plugin.config["owned_games_notify_style"] == "compact"
+    assert isinstance(plugin.config["owned_games_notify_style"], str)
+    assert "已设置" in msg
+
+
+def test_apply_hot_update_owned_compact_ints():
+    plugin = SimpleNamespace(config={"steam_api_key": "K"})
+
+    ok, _ = apply_hot_update(plugin, "owned_games_compact_page_size", "12")
+
+    assert ok is True
+    assert plugin.config["owned_games_compact_page_size"] == 12
+    assert isinstance(plugin.config["owned_games_compact_page_size"], int)
+
+
+def test_apply_hot_update_owned_compact_non_int_rejected():
+    plugin = SimpleNamespace(config={"steam_api_key": "K"})
+
+    ok, msg = apply_hot_update(plugin, "owned_games_compact_max_pages", "abc")
+
+    assert ok is False
+    assert "类型错误" in msg
+    assert "owned_games_compact_max_pages" not in plugin.config

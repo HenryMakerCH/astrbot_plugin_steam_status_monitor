@@ -61,7 +61,16 @@ class OwnedGamesStore:
             return None
         pending = []
         for item in state.get("pending") or []:
-            if not isinstance(item, dict) or item.get("appid") is None:
+            if not isinstance(item, dict):
+                continue
+            # 按 kind 分派：老数据没有 kind 字段 → 视为 "owned"，走原逻辑且不补写 kind，
+            # 保证升级后落盘字节与升级前一致；"owned_batch" 是简洁合并播报的分页批。
+            if str(item.get("kind") or "owned").strip() == "owned_batch":
+                entry = OwnedGamesStore._normalize_batch_entry(item)
+                if entry is not None:
+                    pending.append(entry)
+                continue
+            if item.get("appid") is None:
                 continue
             try:
                 entry = {
@@ -118,6 +127,46 @@ class OwnedGamesStore:
             "pending": pending,
             "recent": recent,
         }
+
+    @staticmethod
+    def _normalize_batch_entry(item):
+        """校验并重建一条 owned_batch 分页记录；非法返回 None（只丢该页，不影响其它 pending）。"""
+        items = item.get("items")
+        if not isinstance(items, list) or not items:
+            return None
+        normalized_items = []
+        for raw in items[:50]:  # 上限 50 项，防御脏数据
+            if not isinstance(raw, dict) or raw.get("appid") is None:
+                continue
+            appid = raw["appid"]
+            normalized_items.append({
+                "appid": str(appid),
+                "name": str(raw.get("name") or f"AppID {appid}"),
+            })
+        if not normalized_items:
+            return None
+        try:
+            entry = {
+                "kind": "owned_batch",
+                "added_at": int(item.get("added_at") or 0),
+                "tries": int(item.get("tries") or 0),
+                "render": bool(item.get("render", True)),
+                "page": max(1, int(item.get("page") or 1)),
+                "pages": max(1, int(item.get("pages") or 1)),
+                "added_count": max(0, int(item.get("added_count") or 0)),
+                "groups": [str(g) for g in (item.get("groups") or [])],
+                "deliveries": [],
+                "items": normalized_items,
+            }
+        except (TypeError, ValueError):
+            return None
+        for delivery in item.get("deliveries") or []:
+            if isinstance(delivery, dict) and isinstance(delivery.get("noti"), dict):
+                entry["deliveries"].append({
+                    "group_id": str(delivery.get("group_id") or ""),
+                    "noti": delivery["noti"],
+                })
+        return entry
 
     @staticmethod
     def new_state():
