@@ -42,6 +42,14 @@ except ImportError:
 
 PLUGIN_NAME = "steam_status_monitor_V3"
 
+# WebUI 保存时做范围校验的整数配置：key -> (最小值, 最大值)
+WEB_INT_RANGES = {
+    "owned_games_compact_page_size": (1, 20),
+    "owned_games_compact_max_pages": (1, 10),
+    "owned_games_compact_cover_concurrency": (1, 8),
+    "owned_games_max_per_notify": (1, 20),
+}
+
 
 def _get_player_display_name(p, sid):
     """获取玩家显示名：绑定备注 > Steam昵称 > SteamID"""
@@ -1043,7 +1051,33 @@ class WebAdminAPI:
         except Exception:
             return json_response({"error": "invalid JSON"}, status_code=400)
         skip_keys = {"steam_api_key", "sgdb_api_key"}
+        # 这两类键必须先校验再落盘：原实现是「先 p.config[key] = value 再分支处理」，
+        # 校验失败时脏值已经写进配置，接口虽返 400 但配置已被污染。
+        validated = {}
         for key, value in data.items():
+            if key == "owned_games_notify_style":
+                style = str(value or "").strip().lower()
+                if style not in ("detailed", "compact"):
+                    return error_response(
+                        "owned_games_notify_style 只能是 detailed 或 compact",
+                        status_code=400,
+                    )
+                validated[key] = style
+            elif key in WEB_INT_RANGES:
+                low, high = WEB_INT_RANGES[key]
+                try:
+                    number = int(value)
+                except (TypeError, ValueError):
+                    return error_response(f"{key} 必须是整数", status_code=400)
+                if number < low or number > high:
+                    return error_response(
+                        f"{key} 取值范围为 {low}-{high}", status_code=400
+                    )
+                validated[key] = number
+        for key, value in data.items():
+            if key in validated:
+                p.config[key] = validated[key]
+                continue
             if key in skip_keys:
                 raw = str(value)
                 if not raw.startswith("******"):
