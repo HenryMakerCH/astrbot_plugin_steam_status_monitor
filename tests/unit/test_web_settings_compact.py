@@ -140,9 +140,22 @@ class SettingsFrontendWiringTests(unittest.TestCase):
         ):
             self.assertIn(f'"{key}"', self.js, msg=f"{key} 未出现在设置页字段清单")
 
-    def test_style_key_renders_as_select(self):
-        self.assertIn("SELV={", self.js)
-        self.assertIn("owned_games_notify_style:[\"auto\",\"detailed\",\"compact\"]", self.js)
+    def test_style_options_are_localized(self):
+        """下拉必须显示中文，但提交值仍须是 auto/detailed/compact。"""
+        section = self.js[self.js.index("owned_games_notify_style:["):]
+        section = section[:section.index("]") + 1]
+        for value in ("auto", "detailed", "compact"):
+            self.assertIn(f'v:"{value}"', section, msg=f"缺少提交值 {value}")
+        for label in ("自动", "详细卡片", "合并图片"):
+            self.assertIn(label, section, msg=f"缺少中文标签 {label}")
+        # 不能把英文原值直接当显示文案
+        self.assertNotIn('t:"auto"', section)
+        self.assertNotIn('t:"detailed"', section)
+        self.assertNotIn('t:"compact"', section)
+
+    def test_select_renders_label_but_submits_value(self):
+        self.assertIn('value="${escapeAttr(o.v)}"', self.js)
+        self.assertIn("${escapeHtml(o.t)}", self.js)
 
     def test_auto_threshold_key_is_exposed(self):
         self.assertIn('"owned_games_auto_compact_threshold"', self.js)

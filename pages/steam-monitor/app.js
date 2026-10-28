@@ -504,7 +504,14 @@ function safeImageUrl(value){
 const SL={steam_api_key:"Steam Web API密钥",sgdb_api_key:"SteamGridDB API密钥",steam_api_base:"Steam Web API代理地址",steam_store_base:"Steam商店代理地址",sgdb_api_base:"SteamGridDB代理地址",fixed_poll_interval:"固定轮询间隔(秒)",smart_poll_intervals:"智能轮询间隔(分)",retry_times:"API重试次数",max_group_size:"单群最大监控人数",detailed_poll_log:"详细轮询日志",enable_achievement_poll:"成就轮询推送",enable_steam_style:"列表新版渲染风格",enable_game_start_notify:"游戏开始通知",enable_game_end_notify:"游戏结束通知",enable_network_fluctuation_notify:"网络波动通知",enable_user_online_notify:"用户上线通知",enable_user_offline_notify:"用户下线通知",notify_send_image:"通知发送图片",notify_send_text:"通知发送文本",notify_quiet_hours:"静默时段(起始,结束)",game_filter_mode:"游戏过滤模式",game_filter_ids:"游戏过滤游戏ID",rank_push_hour:"排行榜推送小时",rank_push_minute:"排行榜推送分钟",enable_proxy:"启用网络代理",proxy_url:"代理链接",cache_avatar_hours:"头像缓存时间(小时)",cache_avatar_frame_hours:"头像框缓存时间(小时)",enable_owned_games_notify:"游戏库新入库播报",owned_games_notify_style:"新入库播报样式",owned_games_auto_compact_threshold:"自动切换合并图的款数阈值",owned_games_compact_page_size:"简洁图片每页游戏数",owned_games_compact_max_pages:"简洁模式单轮最多页数",owned_games_compact_cover_concurrency:"简洁图片封面并发数",owned_games_max_per_notify:"单轮最多渲染卡片数(详细模式)",owned_games_ignore_appids:"游戏库忽略的AppID"};
 const SO=["steam_api_key","sgdb_api_key","steam_api_base","steam_store_base","sgdb_api_base","fixed_poll_interval","smart_poll_intervals","retry_times","max_group_size","enable_game_start_notify","enable_game_end_notify","enable_network_fluctuation_notify","enable_user_online_notify","enable_user_offline_notify","enable_achievement_poll","enable_steam_style","notify_send_text","notify_send_image","notify_quiet_hours","detailed_poll_log","game_filter_mode","game_filter_ids","rank_push_hour","rank_push_minute","enable_proxy","proxy_url","cache_avatar_hours","cache_avatar_frame_hours","enable_owned_games_notify","owned_games_notify_style","owned_games_auto_compact_threshold","owned_games_compact_page_size","owned_games_compact_max_pages","owned_games_compact_cover_concurrency","owned_games_max_per_notify","owned_games_ignore_appids"];
 const BK=["detailed_poll_log","enable_achievement_poll","enable_steam_style","enable_game_start_notify","enable_game_end_notify","enable_network_fluctuation_notify","enable_user_online_notify","enable_user_offline_notify","notify_send_image","notify_send_text","enable_owned_games_notify"];
-const SELV={game_filter_mode:["全部游戏","白名单","黑名单"],owned_games_notify_style:["auto","detailed","compact"]};
+const SELV={
+  game_filter_mode:[{v:"全部游戏",t:"全部游戏"},{v:"白名单",t:"白名单"},{v:"黑名单",t:"黑名单"}],
+  owned_games_notify_style:[
+    {v:"auto",t:"自动（按数量决定）"},
+    {v:"detailed",t:"详细卡片（每款一张）"},
+    {v:"compact",t:"合并图片（多款一张）"}
+  ]
+};
 
 async function renderQQOfficial(){
   const data=await API.get("/api/qq-official/settings");const c=document.getElementById("content");
@@ -553,7 +560,7 @@ async function renderSettings(){
   let h='<h2 class="page-title">插件设置</h2><div class="card">';
   for(const k of SO){const l=SL[k]||k;
     if(SEK.includes(k))h+=`<div class="form-group"><label class="form-label">${l}</label><input id="cfg-${k}" class="form-input" type="password"></div>`;
-    else if(SELV[k]){h+=`<div class="form-group"><label class="form-label">${l}</label><select id="cfg-${k}" class="form-input">${SELV[k].map(m=>`<option ${data[k]===m?"selected":""}>${m}</option>`).join("")}</select></div>`}
+    else if(SELV[k]){h+=`<div class="form-group"><label class="form-label">${l}</label><select id="cfg-${k}" class="form-input">${SELV[k].map(o=>`<option value="${escapeAttr(o.v)}" ${String(data[k])===String(o.v)?"selected":""}>${escapeHtml(o.t)}</option>`).join("")}</select></div>`}
     else if(BK.includes(k))h+=`<div class="form-group"><label class="flex gap-8" style="align-items:center;cursor:pointer"><label class="toggle"><input type="checkbox" id="cfg-${k}" ${data[k]?"checked":""}><span class="slider"></span></label><span>${l}</span></label></div>`;
     else if(IK.includes(k))h+=`<div class="form-group"><label class="form-label">${l}</label><input id="cfg-${k}" class="form-input" type="number" value="${escapeAttr(data[k]??"")}"></div>`;
     else h+=`<div class="form-group"><label class="form-label">${l}</label><input id="cfg-${k}" class="form-input" value="${escapeAttr(data[k]??"")}"></div>`}
