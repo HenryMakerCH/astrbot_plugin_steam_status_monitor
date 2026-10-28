@@ -7,6 +7,9 @@ venv/
 *.lnk
 test_line.txt
 /data/steam_status_monitor/
+/dist/
+# 插件运行期产物（预览图、临时渲染输出等），不入库
+/data/
 /docs/self/
 
 # 运行时下载的 CJK 字体（商店包 / Git 不跟踪）
