@@ -44,6 +44,7 @@ PLUGIN_NAME = "steam_status_monitor_V3"
 
 # WebUI 保存时做范围校验的整数配置：key -> (最小值, 最大值)
 WEB_INT_RANGES = {
+    "owned_games_auto_compact_threshold": (1, 20),
     "owned_games_compact_page_size": (1, 20),
     "owned_games_compact_max_pages": (1, 10),
     "owned_games_compact_cover_concurrency": (1, 8),
@@ -1057,9 +1058,9 @@ class WebAdminAPI:
         for key, value in data.items():
             if key == "owned_games_notify_style":
                 style = str(value or "").strip().lower()
-                if style not in ("detailed", "compact"):
+                if style not in ("auto", "detailed", "compact"):
                     return error_response(
-                        "owned_games_notify_style 只能是 detailed 或 compact",
+                        "owned_games_notify_style 只能是 auto、detailed 或 compact",
                         status_code=400,
                     )
                 validated[key] = style

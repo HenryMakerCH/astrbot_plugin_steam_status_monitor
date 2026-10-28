@@ -142,7 +142,10 @@ class SettingsFrontendWiringTests(unittest.TestCase):
 
     def test_style_key_renders_as_select(self):
         self.assertIn("SELV={", self.js)
-        self.assertIn("owned_games_notify_style:[\"detailed\",\"compact\"]", self.js)
+        self.assertIn("owned_games_notify_style:[\"auto\",\"detailed\",\"compact\"]", self.js)
+
+    def test_auto_threshold_key_is_exposed(self):
+        self.assertIn('"owned_games_auto_compact_threshold"', self.js)
 
     def test_int_keys_are_collected_as_numbers(self):
         marker = "const IK=["

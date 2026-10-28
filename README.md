@@ -86,7 +86,8 @@
 | `owned_games_poll_interval` | 游戏库轮询间隔（秒，最小 600） | 1800 |
 | `owned_games_include_free` | 游戏库是否包含玩过的免费游戏 | true |
 | `owned_games_max_per_notify` | 单轮最多渲染卡片数（1-20，超出仅文本列出，仅详细模式生效） | 5 |
-| `owned_games_notify_style` | 新入库播报样式：`detailed` 逐款富卡 / `compact` 合并清单图 | detailed |
+| `owned_games_notify_style` | 新入库播报样式：`auto` 按数量自动选 / `detailed` 逐款富卡 / `compact` 合并清单图 | auto |
+| `owned_games_auto_compact_threshold` | auto 模式下改用合并图的款数阈值（1-20） | 3 |
 | `owned_games_compact_page_size` | 简洁模式每页游戏数（1-20，超出自动分页） | 8 |
 | `owned_games_compact_max_pages` | 简洁模式单轮最多页数（1-10，超出本轮不播报但记入最近入库） | 3 |
 | `owned_games_compact_cover_concurrency` | 简洁模式封面下载并发（1-8） | 4 |
@@ -244,8 +245,8 @@ pip install "httpx[socks]" "Pillow>=9.5,<14"
 ## 更新记录
 - V4.12.0（2026/10/28）
   - **修复评价摘要全部失效（Issue #65）**：Steam 已将商店旧接口 `/appreviews/<appid>?json=1` 标记废弃，现在对所有 AppID 一律返回 302 跳转到商店首页（跟随重定向只能拿到 HTML），导致新入库卡片的评价区静默缺失、日志报 `UPSTREAM_ERROR`。已迁移至 `IUserReviewsService/GetAppReviews/v1`（免 API Key），评分档位改用 Steam 官方 `review_score` 加权口径，与商店页面文案一致；下架或非法 AppID 返回的空响应按「暂无评价」降级而不是报错。
-  - **新配置 `owned_games_notify_style`（Issue #66）**：`detailed`（默认，逐款富卡，行为与旧版一致）/ `compact`（本轮新增合并为清单图）。简洁模式顶部显示头像、名称、本轮新增数量与游戏库总数，每行封面缩略图 + 游戏名，超过每页条数自动分页并标注页码；不再请求商店详情与双语言评价，封面优先命中本地缓存，显著降低 API 消耗与刷屏。
-  - **新配置**：`owned_games_compact_page_size`（每页游戏数，默认 8）、`owned_games_compact_max_pages`（单轮最多页数，默认 3）、`owned_games_compact_cover_concurrency`（封面并发，默认 4）。四键均支持 `/steam set` 即时切换。
+  - **新配置 `owned_games_notify_style`（Issue #66）**：默认 `auto`，按本轮新增数量自动选择——新增不足 3 款时逐款发富卡（单款时信息最全），达到 3 款及以上自动合并成清单图，避免连续刷屏。也可固定为 `detailed`（始终逐款富卡）或 `compact`（始终合并）。简洁模式顶部显示头像、名称、本轮新增数量与游戏库总数，每行封面缩略图 + 游戏名，超过每页条数自动分页并标注页码，序号跨页连续；不再请求商店详情与双语言评价，封面优先命中本地缓存，显著降低 API 消耗。
+  - **新配置**：`owned_games_auto_compact_threshold`（自动切换阈值，默认 3）、`owned_games_compact_page_size`（每页游戏数，默认 8）、`owned_games_compact_max_pages`（单轮最多页数，默认 3）、`owned_games_compact_cover_concurrency`（封面并发，默认 4）。五项均可在 WebUI 设置页修改，也支持 `/steam set` 即时切换。
   - **修复仅图片模式的误判（Issue #66 提到的边界情况）**：超出单轮富卡上限的条目本就不出图，若同时关闭文本推送，旧逻辑会把「本就没有可发送内容」误判为渲染失败并塞进补发队列重试 5 次后丢弃。现在把「主动不渲染」与「渲染失败」区分开，前者按已消费处理，后者保留原有重试语义。
   - **存储兼容**：`owned_games.json` 的待补发记录按 `kind` 分派归一化，旧数据（无 `kind`、含 `card_data`）字段完整保留、落盘字节不变；简洁模式的分页记录可跨重启续发，且失败只补发失败页。
 

@@ -25,6 +25,8 @@ class PluginStub:
         self.config = {
             "enable_owned_games_notify": True,
             "owned_games_poll_interval": 1800,
+            # 显式指定样式：本文件的流程用例要验证「纯 compact」行为，
+            # 不能受 auto 阈值影响。auto 的专项用例见 test_auto_* 。
             "owned_games_notify_style": "compact",
         }
         self.config.update(config or {})
@@ -247,9 +249,59 @@ class CompactFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("owned", notis[0]["type"])
         self.assertEqual([True, False], [n["render"] for n in notis])
 
-    async def test_invalid_style_falls_back_to_detailed(self):
+    async def test_invalid_style_falls_back_to_auto(self):
         self.plugin.config["owned_games_notify_style"] = "compactt"
-        self.assertEqual("detailed", self.service._style())
+        self.assertEqual("auto", self.service._style())
+
+    async def test_auto_style_threshold_behaviour(self):
+        """auto 默认：新增 < 3 款走富卡，>= 3 款转合并图。"""
+        del self.plugin.config["owned_games_notify_style"]  # 回到出厂默认 auto
+        self.assertEqual("auto", self.service._style())
+        self.assertEqual("detailed", self.service._effective_style(1))
+        self.assertEqual("detailed", self.service._effective_style(2))
+        self.assertEqual("compact", self.service._effective_style(3))
+        self.assertEqual("compact", self.service._effective_style(10))
+
+    async def test_auto_threshold_is_configurable(self):
+        del self.plugin.config["owned_games_notify_style"]
+        self.plugin.config["owned_games_auto_compact_threshold"] = 5
+        self.assertEqual("detailed", self.service._effective_style(4))
+        self.assertEqual("compact", self.service._effective_style(5))
+
+    async def test_auto_threshold_out_of_range_is_clamped(self):
+        self.plugin.config["owned_games_auto_compact_threshold"] = 999
+        self.assertEqual(20, self.service._auto_threshold())
+        self.plugin.config["owned_games_auto_compact_threshold"] = "abc"
+        self.assertEqual(3, self.service._auto_threshold())
+
+    async def test_explicit_styles_ignore_threshold(self):
+        self.plugin.config["owned_games_notify_style"] = "detailed"
+        self.assertEqual("detailed", self.service._effective_style(50))
+        self.plugin.config["owned_games_notify_style"] = "compact"
+        self.assertEqual("compact", self.service._effective_style(1))
+
+    async def test_auto_picks_compact_for_three_games(self):
+        """端到端：默认 auto + 新增 3 款 → 合并图（1 条消息），而非 3 张富卡。"""
+        del self.plugin.config["owned_games_notify_style"]
+        self.plugin.fetch_queue = [games(1), games(1, 2, 3, 4)]  # 基线 [1] → 新增 3 款
+        await self.service.sync_all(baseline_only=True)
+        await self.service.sync_all()
+
+        notis = self._notis()
+        self.assertEqual(1, len(notis))
+        self.assertEqual(BATCH_KIND, notis[0]["type"])
+        self.assertEqual(3, len(notis[0]["items"]))
+
+    async def test_auto_keeps_detailed_for_two_games(self):
+        """端到端：默认 auto + 新增 2 款 → 仍走逐款富卡。"""
+        del self.plugin.config["owned_games_notify_style"]
+        self.plugin.fetch_queue = [games(1), games(1, 2, 3)]
+        await self.service.sync_all(baseline_only=True)
+        await self.service.sync_all()
+
+        notis = self._notis()
+        self.assertEqual(2, len(notis))
+        self.assertEqual({"owned"}, {n["type"] for n in notis})
 
 
 class _NotifyStub(NotificationTrackingMixin):

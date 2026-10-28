@@ -350,9 +350,15 @@
   "owned_games_notify_style": {
     "description": "游戏库新入库播报样式",
     "type": "string",
-    "hint": "detailed=每款新增一张商店详情富卡（含简介与双语言评价，每款需请求商店详情与评价，API 消耗较高）；compact=本轮新增合并为清单图（仅游戏名+封面缩略图，按每页条数自动分页），适合一次入库很多款。默认 detailed；也可用 /steam set owned_games_notify_style compact 即时切换",
-    "default": "detailed",
-    "enum": ["detailed", "compact"]
+    "hint": "auto=按本轮新增数量自动选择（默认，达到下方阈值用合并图，否则逐款富卡）；detailed=始终逐款富卡（每款需请求商店详情与评价，API 消耗较高）；compact=始终合并为清单图（仅游戏名+封面缩略图，按每页条数分页）。也可用 /steam set owned_games_notify_style compact 即时切换",
+    "default": "auto",
+    "enum": ["auto", "detailed", "compact"]
+  },
+  "owned_games_auto_compact_threshold": {
+    "description": "自动切换合并图的款数阈值",
+    "type": "int",
+    "hint": "样式为 auto 时生效：本轮新增达到或超过这个款数就用合并清单图，少于它则逐款发富卡（1-20）。默认 3，即一次入库 3 款及以上自动合并成一张图",
+    "default": 3
   },
   "owned_games_compact_page_size": {
     "description": "简洁图片每页游戏数",

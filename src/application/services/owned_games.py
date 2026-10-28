@@ -29,12 +29,35 @@ DEFAULT_GRACE_DAYS = 7
 RECENT_HISTORY_LIMIT = 20
 DAY_ROLLOVER_HOUR = 4
 
-NOTIFY_STYLES = ("detailed", "compact")
-DEFAULT_NOTIFY_STYLE = "detailed"
+NOTIFY_STYLES = ("auto", "detailed", "compact")
+DEFAULT_NOTIFY_STYLE = "auto"
+DEFAULT_AUTO_COMPACT_THRESHOLD = 3
 DEFAULT_COMPACT_PAGE_SIZE = 8
 DEFAULT_COMPACT_MAX_PAGES = 3
 DEFAULT_COMPACT_COVER_CONCURRENCY = 4
 BATCH_KIND = "owned_batch"
+
+
+def resolve_notify_style(style, added_count, threshold):
+    """把配置里的样式解析成本轮真正使用的 detailed / compact。
+
+    auto 模式下按本轮新增数量二选一：达到阈值就用合并图（省消息数），
+    否则沿用逐款富卡（信息更全，单款时体验更好）。
+    """
+    value = str(style or DEFAULT_NOTIFY_STYLE).strip().lower()
+    if value not in NOTIFY_STYLES:
+        value = DEFAULT_NOTIFY_STYLE
+    if value != "auto":
+        return value
+    try:
+        limit = max(1, int(threshold))
+    except (TypeError, ValueError):
+        limit = DEFAULT_AUTO_COMPACT_THRESHOLD
+    try:
+        count = len(added_count) if not isinstance(added_count, int) else added_count
+    except TypeError:
+        count = 0
+    return "compact" if count >= limit else "detailed"
 
 
 def paginate_compact_entries(entries, page_size, max_pages=None):
@@ -142,10 +165,28 @@ class OwnedGamesService:
         return bool(self.plugin.config.get("owned_games_include_free", True))
 
     def _style(self) -> str:
-        """播报样式：detailed（逐款富卡，默认）或 compact（本轮合并清单图）。"""
+        """配置里的播报样式原始值：auto（默认）/ detailed / compact。
+
+        auto 需要知道本轮新增数量才能定夺，真正的二选一见 _effective_style()。
+        """
         raw = (self.plugin.config or {}).get("owned_games_notify_style")
         value = str(raw or DEFAULT_NOTIFY_STYLE).strip().lower()
         return value if value in NOTIFY_STYLES else DEFAULT_NOTIFY_STYLE
+
+    def _auto_threshold(self) -> int:
+        try:
+            value = int(
+                self.plugin.config.get(
+                    "owned_games_auto_compact_threshold", DEFAULT_AUTO_COMPACT_THRESHOLD
+                )
+            )
+        except (TypeError, ValueError):
+            value = DEFAULT_AUTO_COMPACT_THRESHOLD
+        return min(20, max(1, value or DEFAULT_AUTO_COMPACT_THRESHOLD))
+
+    def _effective_style(self, added_count) -> str:
+        """本轮实际使用的样式（已把 auto 解析成 detailed / compact）。"""
+        return resolve_notify_style(self._style(), added_count, self._auto_threshold())
 
     def _compact_page_size(self) -> int:
         try:
@@ -395,7 +436,7 @@ class OwnedGamesService:
         if not self._enabled():
             logger.info(f"[游戏库] {sid} 检出 {len(appids)} 款新增，但播报开关已关闭，仅更新本地快照")
             return 0
-        if self._style() == "compact":
+        if self._effective_style(len(appids)) == "compact":
             return await self._announce_compact(sid, groups, appids, state)
         max_cards = self._max_per_notify()
         now = int(time.time())
